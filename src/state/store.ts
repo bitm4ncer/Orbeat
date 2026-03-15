@@ -290,10 +290,12 @@ export interface StoreState {
   synthFloatPos: { x: number; y: number };
   synthFloatSize: { w: number; h: number };
   synthFloatMinimized: boolean;
+  synthPanelCollapsed: boolean;
   setSynthPanelMode: (mode: 'inline' | 'floating' | 'popout') => void;
   setSynthFloatPos: (pos: { x: number; y: number }) => void;
   setSynthFloatSize: (size: { w: number; h: number }) => void;
   setSynthFloatMinimized: (minimized: boolean) => void;
+  setSynthPanelCollapsed: (collapsed: boolean) => void;
 
   // Logging
   logEnabled: boolean;
@@ -568,6 +570,7 @@ export const useStore = create<StoreState>((set, get) => ({
   synthFloatPos: JSON.parse(localStorage.getItem('orbitrack:synthFloatPos') || '{"x":100,"y":100}'),
   synthFloatSize: JSON.parse(localStorage.getItem('orbitrack:synthFloatSize') || '{"w":900,"h":600}'),
   synthFloatMinimized: false,
+  synthPanelCollapsed: false,
   setSynthPanelMode: (mode) => {
     localStorage.setItem('orbitrack:synthPanelMode', mode);
     set({ synthPanelMode: mode, synthFloatMinimized: false });
@@ -581,6 +584,7 @@ export const useStore = create<StoreState>((set, get) => ({
     set({ synthFloatSize: size });
   },
   setSynthFloatMinimized: (minimized) => set({ synthFloatMinimized: minimized }),
+  setSynthPanelCollapsed: (collapsed) => set({ synthPanelCollapsed: collapsed }),
 
   logEnabled: localStorage.getItem('orbitrack:logEnabled') === 'true',
   showLogConsole: localStorage.getItem('orbitrack:showLogConsole') === 'true',

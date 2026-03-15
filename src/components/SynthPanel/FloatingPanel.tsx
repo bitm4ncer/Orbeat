@@ -84,28 +84,15 @@ export function FloatingPanel({ title, color, children }: FloatingPanelProps) {
               )}
             </svg>
           </button>
-          {/* Pop-out to new window */}
-          <button
-            onClick={(e) => { e.stopPropagation(); setSynthPanelMode('popout'); }}
-            className="p-1 hover:bg-white/10 rounded transition-colors"
-            title="Pop out to new window"
-          >
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#8888a0" strokeWidth="1.5">
-              <rect x="1" y="3" width="7" height="7" rx="1" strokeLinecap="round" />
-              <polyline points="5 1 11 1 11 7" strokeLinecap="round" strokeLinejoin="round" />
-              <line x1="11" y1="1" x2="6" y2="6" strokeLinecap="round" />
-            </svg>
-          </button>
-          {/* Dock (return to inline) */}
+          {/* Dock (return to inline sidebar) — arrow points bottom-right */}
           <button
             onClick={(e) => { e.stopPropagation(); setSynthPanelMode('inline'); }}
             className="p-1 hover:bg-white/10 rounded transition-colors"
             title="Dock to sidebar"
           >
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#8888a0" strokeWidth="1.5">
-              <polyline points="7 1 1 1 1 5" strokeLinecap="round" strokeLinejoin="round" />
-              <line x1="1" y1="1" x2="6" y2="6" strokeLinecap="round" />
-              <rect x="5" y="5" width="6" height="6" rx="1" strokeLinecap="round" />
+              <polyline points="5 11 11 11 11 5" strokeLinecap="round" strokeLinejoin="round" />
+              <line x1="1" y1="1" x2="11" y2="11" strokeLinecap="round" />
             </svg>
           </button>
         </div>

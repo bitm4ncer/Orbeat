@@ -133,6 +133,25 @@ export function useKeyboardShortcuts(): void {
         }
       }
 
+      // Toggle synth panel: S (only when a synth is selected)
+      if (e.code === 'KeyS' && !isMod && !e.shiftKey) {
+        const s = useStore.getState();
+        if (s.renamingId) return;
+        const instr = s.instruments.find((i) => i.id === s.selectedInstrumentId);
+        if (instr?.type === 'synth') {
+          e.preventDefault();
+          if (s.synthPanelMode === 'floating') {
+            // Dock and expand
+            s.setSynthPanelMode('inline');
+            s.setSynthPanelCollapsed(false);
+            s.setSynthFloatMinimized(false);
+          } else {
+            s.setSynthPanelCollapsed(!s.synthPanelCollapsed);
+          }
+          return;
+        }
+      }
+
       if (e.code === 'Space') {
         e.preventDefault();
         await ensureAudio();

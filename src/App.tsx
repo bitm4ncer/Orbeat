@@ -3,6 +3,7 @@ import { TransportBar } from './components/Transport/TransportBar';
 import { InstrumentRack } from './components/InstrumentRack/InstrumentRack';
 import { GridSequencer } from './components/GridSequencer/GridSequencer';
 import { SynthPanel } from './components/SynthPanel/SynthPanel';
+import { FloatingPanel } from './components/SynthPanel/FloatingPanel';
 import { SampleBank } from './components/SampleBank/SampleBank';
 import { LooperEditor } from './components/LooperPanel/LooperEditor';
 import { LoopBrowser } from './components/LooperPanel/LoopBrowser';
@@ -51,6 +52,10 @@ function App() {
   const isSynthSelected = selectedInstrument?.type === 'synth';
   const isSamplerSelected = selectedInstrument?.type === 'sampler';
   const isLooperSelected = selectedInstrument?.type === 'looper';
+  const synthPanelMode = useStore((s) => s.synthPanelMode);
+  const synthPanelCollapsed = useStore((s) => s.synthPanelCollapsed);
+  const isSynthFloating = isSynthSelected && synthPanelMode === 'floating';
+  const isSynthHidden = isSynthFloating || (isSynthSelected && synthPanelCollapsed);
   const hasSelection = !!selectedInstrument;
 
   // Performance monitor — toggle with Ctrl+Shift+P or window.__orbitrackPerf
@@ -284,8 +289,8 @@ function App() {
               style={{ height: bottomHeight }}
             >
               {isLooperSelected ? <LooperEditor /> : <GridSequencer />}
-              {/* Right panel resize handle + container */}
-              {(isSynthSelected || isSamplerSelected || isLooperSelected) && (
+              {/* Right panel resize handle + container (hidden when synth is floating or collapsed) */}
+              {((isSynthSelected && !isSynthHidden) || isSamplerSelected || isLooperSelected) && (
                 <>
                   <div
                     className="resize-handle cursor-ew-resize shrink-0 flex items-center justify-center group hover:bg-accent/10 transition-colors"
@@ -295,7 +300,7 @@ function App() {
                     <div className="h-10 w-0.5 rounded-full bg-border/60 group-hover:bg-accent/60 transition-colors" />
                   </div>
                   <div className={`shrink-0 h-full overflow-y-auto ${rightIsDragging ? '' : 'transition-[width] duration-300'}`} style={{ width: rightPanelWidth }}>
-                    {isSynthSelected && <SynthPanel />}
+                    {isSynthSelected && !isSynthFloating && <SynthPanel />}
                     {isSamplerSelected && <SampleBank />}
                     {isLooperSelected && <LoopBrowser />}
                   </div>
@@ -321,6 +326,13 @@ function App() {
       </div>
 
       {logEnabled && showLogConsole && <LogConsole />}
+
+      {/* Floating synth popup */}
+      {isSynthFloating && (
+        <FloatingPanel title="orbisynth" color={selectedInstrument!.color}>
+          <SynthPanel />
+        </FloatingPanel>
+      )}
 
       <TransportBar />
     </div>

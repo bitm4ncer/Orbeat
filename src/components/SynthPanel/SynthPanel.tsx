@@ -116,7 +116,8 @@ export function SynthPanel() {
   // Force re-render when a param is mutated directly on the engine.
   const [, forceUpdate] = useReducer((x: number) => x + 1, 0);
   const updateEngineParams = useStore((s) => s.updateEngineParams);
-  const [synthCollapsed, setSynthCollapsed] = useState(false);
+  const synthCollapsed = useStore((s) => s.synthPanelCollapsed);
+  const setSynthCollapsed = useStore((s) => s.setSynthPanelCollapsed);
   const synthPanelMode = useStore((s) => s.synthPanelMode);
   const setSynthPanelMode = useStore((s) => s.setSynthPanelMode);
   const isFloating = synthPanelMode !== 'inline';
@@ -626,7 +627,7 @@ export function SynthPanel() {
   return (
     <ModulationProvider assignments={modAssignments} onAssignmentsChange={handleModAssignmentsChange}>
     <div
-      className={`synth-panel bg-bg-secondary ${isFloating ? '' : 'border-l border-border'} shrink-0 flex flex-col w-full ${isFloating ? 'overflow-hidden' : 'overflow-y-auto'}`}
+      className={`synth-panel bg-bg-secondary ${isFloating ? 'flex-1 min-h-0' : 'border-l border-border shrink-0'} flex flex-col w-full ${isFloating ? 'overflow-hidden' : 'overflow-y-auto'}`}
     >
       {/* ─── Header: name + float toggle + collapse ──────────────────── */}
       {!isFloating && (
@@ -653,7 +654,7 @@ export function SynthPanel() {
           </button>
           {/* Collapse toggle */}
           <button
-            onClick={() => setSynthCollapsed(c => !c)}
+            onClick={() => setSynthCollapsed(!synthCollapsed)}
             title={synthCollapsed ? 'Expand synth' : 'Collapse synth'}
             className="flex-shrink-0 p-1 hover:bg-white/10 rounded transition-colors"
           >

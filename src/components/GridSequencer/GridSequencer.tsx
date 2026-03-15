@@ -93,6 +93,9 @@ export function GridSequencer() {
   const scaleType = useStore((s) => s.scaleType);
   const midiRecordArmed = useStore((s) => s.midiRecordArmed);
   const midiRecordMode = useStore((s) => s.midiRecordMode);
+  const synthPanelCollapsed = useStore((s) => s.synthPanelCollapsed);
+  const synthPanelMode = useStore((s) => s.synthPanelMode);
+  const synthFloatMinimized = useStore((s) => s.synthFloatMinimized);
 
   const dragRef = useRef<DragState | null>(null);
   const gridBodyRef = useRef<HTMLDivElement>(null);
@@ -1314,6 +1317,31 @@ export function GridSequencer() {
             title={midiRecordArmed ? 'Disarm MIDI record' : 'Arm MIDI record'}
           />
           {octaveButtons}
+          {isSynth && (
+            (synthPanelCollapsed && synthPanelMode === 'inline') ||
+            (synthPanelMode === 'floating' && synthFloatMinimized)
+          ) && (
+            <button
+              onClick={() => {
+                const s = useStore.getState();
+                if (s.synthPanelMode === 'floating') {
+                  s.setSynthPanelMode('inline');
+                  s.setSynthPanelCollapsed(false);
+                  s.setSynthFloatMinimized(false);
+                } else {
+                  s.setSynthPanelCollapsed(false);
+                }
+              }}
+              title={synthPanelMode === 'floating' ? 'Dock & show synth panel' : 'Expand synth panel'}
+              className="p-1 hover:bg-white/10 rounded transition-colors ml-1"
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={instrument.color} strokeWidth="1.5"
+                className="hover:opacity-80 transition-opacity">
+                <rect x="7" y="1" width="6" height="12" rx="1" strokeLinecap="round" />
+                <polyline points="5 5 3 7 5 9" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 
