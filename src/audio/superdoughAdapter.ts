@@ -98,94 +98,72 @@ export function triggerSuperdough(
 }
 
 /**
- * Trigger a looper slice. Called from transport for looper instruments.
- * Computes slice begin/end from sorted hit positions and adjusts playback speed
- * so the slice fills exactly the available time between this marker and the next.
+ * Trigger continuous looper playback. Called from transport on step 0 of each cycle.
+ * Plays the full sample (or loop region) as a single superdough call spanning the
+ * entire cycle duration. Speed is adjusted for time-stretch; phase vocoder
+ * compensates pitch when keepPitch is enabled.
  */
-export function triggerLooperSlice(
+export function triggerLooperContinuous(
   instrument: Instrument,
-  hitIndex: number,
-  sortedHits: number[],
   secondsPerStep: number,
   audioTime: number,
   state: StoreState,
-  overrideAvailableSec?: number,
 ): void {
   if (!instrument.sampleName) return;
 
   const lp = { ...DEFAULT_LOOPER_PARAMS, ...instrument.looperParams };
-
   const editorState = state.looperEditors[instrument.id];
   const loopIn = editorState?.loopIn ?? 0;
   const loopOut = editorState?.loopOut ?? 1;
+  const bufferDuration = editorState?.audioBuffer?.duration ?? 1;
+  const cycleDuration = instrument.loopSize * secondsPerStep;
 
-  // Hit positions are normalized [0..1] in the FULL buffer (from transient detection).
-  // loopIn/loopOut define a trim window [loopIn..loopOut] of the buffer to play.
-  // Filter hits to only those within the loop region; use their buffer-space coords directly.
-  const rawBegin = sortedHits[hitIndex];
-  const rawEnd = hitIndex + 1 < sortedHits.length ? sortedHits[hitIndex + 1] : loopOut;
+  // Region of the buffer to play
+  const regionSize = loopOut - loopIn;
+  const regionDuration = regionSize * bufferDuration;
 
-  // Skip hits outside the loop region
-  if (rawBegin < loopIn || rawBegin >= loopOut) return;
+  // Speed calculation
+  let speed: number;
+  let stretchSpeed = 1; // the tempo-change portion (before pitch offset)
 
-  // Clamp slice end to loop boundary
-  const sliceBegin = rawBegin;
-  const sliceEnd = Math.min(rawEnd, loopOut);
-
-  if (sliceBegin >= sliceEnd) return; // degenerate slice
-
-  // Compute time-stretch speed
-  const bufferDuration = editorState?.audioBuffer?.duration;
-
-  // If editor isn't loaded yet (no decoded buffer), play slices at 1x speed
-  // to avoid extreme speed distortion from the default 1s fallback.
-  const thisStep = Math.round(sortedHits[hitIndex] * instrument.loopSize);
-  const nextStep = hitIndex + 1 < sortedHits.length
-    ? Math.round(sortedHits[hitIndex + 1] * instrument.loopSize)
-    : instrument.loopSize;
-  const availableSec = overrideAvailableSec ?? (nextStep - thisStep) * secondsPerStep;
-
-  // Per-slice time-stretch: adjust speed so each slice fills its grid slot exactly.
-  // This handles tempo matching — loopSize (orbit steps) controls perceived tempo.
-  // lp.speed is NOT applied here: it was a BPM-match ratio that double-corrects
-  // since estimateLoopSize already accounts for detected BPM.
-  let sliceSpeed = 1;
-  if (lp.stretchToSteps && bufferDuration && bufferDuration > 0) {
-    const originalSliceSec = (sliceEnd - sliceBegin) * bufferDuration;
-    sliceSpeed = originalSliceSec / Math.max(availableSec, 0.01);
+  if (lp.stretchToSteps) {
+    // Stretch: fit the sample region into the cycle duration
+    stretchSpeed = regionDuration / Math.max(cycleDuration, 0.01);
+    speed = stretchSpeed;
+  } else {
+    // No stretch: play at natural speed (pitch knob adjusts rate)
+    speed = 1;
   }
 
-  // Apply pitch offset (semitones) — only pitch control for looper slices
+  // Apply pitch offset (semitones)
   const pitchRatio = Math.pow(2, (lp.pitchSemitones ?? 0) / 12);
-  sliceSpeed *= pitchRatio;
+  speed *= pitchRatio;
 
-  // Clamp to avoid extreme speed values that cause distortion
-  sliceSpeed = Math.max(0.1, Math.min(sliceSpeed, 8));
+  // Clamp to avoid extreme speed values
+  speed = Math.max(0.1, Math.min(speed, 8));
 
-  // Reverse: negate speed so superdough plays backwards
-  if (lp.reverse) {
-    sliceSpeed = -sliceSpeed;
-  }
-
-  // Auto-crossfade: enforce minimum attack/release to prevent clicks
-  const safeAttack = Math.max(lp.attack, 0.002);
-  const safeRelease = Math.max(lp.release, 0.005);
-
-  const instGain = dbToLinear(instrument.volume);
-  const effectOverrides = getEffectOverrides(instrument, state);
-
-  superdough({
+  // Build superdough params
+  const params: Record<string, unknown> = {
     s: instrument.sampleName,
-    gain: lp.gain * instGain,
-    speed: sliceSpeed,
-    begin: lp.reverse ? sliceEnd : sliceBegin,
-    end: lp.reverse ? sliceBegin : sliceEnd,
-    attack: safeAttack,
-    release: safeRelease,
+    gain: lp.gain * dbToLinear(instrument.volume),
+    speed: lp.reverse ? -speed : speed,
+    begin: lp.reverse ? loopOut : loopIn,
+    end: lp.reverse ? loopIn : loopOut,
+    attack: Math.max(lp.attack, 0.002),
+    release: Math.max(lp.release, 0.005),
     cutoff: lp.cutoff,
     resonance: lp.resonance,
     pan: (lp.pan + 1) / 2,
     orbit: instrument.orbitIndex,
-    ...effectOverrides,
-  }, safeTime(audioTime), availableSec);
+    ...getEffectOverrides(instrument, state),
+  };
+
+  // Keep Pitch: phase vocoder compensates the tempo-change portion of speed
+  // superdough's stretch param: pitchFactor = Math.max(0, stretch + 1)
+  // We want pitchFactor = 1/stretchSpeed, so stretch = (1/stretchSpeed) - 1
+  if (lp.keepPitch && lp.stretchToSteps && Math.abs(stretchSpeed - 1) > 0.01) {
+    params.stretch = (1 / stretchSpeed) - 1;
+  }
+
+  superdough(params, safeTime(audioTime), cycleDuration);
 }

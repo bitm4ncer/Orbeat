@@ -1,6 +1,6 @@
 import * as Tone from 'tone';
 import { useStore } from '../state/store';
-import { triggerSuperdough, triggerLooperSlice } from './superdoughAdapter';
+import { triggerSuperdough, triggerLooperContinuous } from './superdoughAdapter';
 import { applyOrbitToneEffects } from './orbitEffects';
 import { applySceneEffects, setSceneBusVolume, setSceneBusMuted } from './sceneBus';
 import { syncBpmToEngines } from './synthManager';
@@ -31,11 +31,6 @@ let _anySolo = false;
 // Pre-allocated per-tick buffer — avoids creating a new object every tick.
 const _instProgress: Record<string, number> = {};
 
-// Per-instrument loopHits cache — recomputed only when hitPositions ref changes.
-const _loopHitsCache = new Map<string, { ref: readonly number[]; loopIn: number; loopOut: number; sorted: number[] }>();
-
-// Per-instrument sorted hitPositions cache (non-looper path).
-const _sortedHitsMap = new Map<string, { ref: readonly number[]; sorted: number[] }>();
 
 // Track Mode: cached active-scene instrument set — rebuilt when scenes/arrangement ref changes.
 let _trackSceneRef: unknown = null;
@@ -80,6 +75,15 @@ function startUISync(): void {
       // Reuse _instProgress buffer — only spread when values actually change
       let progressChanged = false;
       for (const inst of state.instruments) {
+        // For loopers with an active loop region, _tick() already sets
+        // _instProgress to cycle within the region — don't overwrite it.
+        if (inst.type === 'looper') {
+          const ed = state.looperEditors[inst.id];
+          if (ed && (ed.loopIn > 0 || ed.loopOut < 1)) {
+            progressChanged = true; // ensure the tick-written value propagates
+            continue;
+          }
+        }
         const p = (totalSteps % inst.loopSize) / inst.loopSize;
         if (_instProgress[inst.id] !== p) {
           _instProgress[inst.id] = p;
@@ -209,8 +213,6 @@ export function stopTransport(): void {
   _lastApplied.clear();
   _lastSceneApplied.clear();
   _lastSceneState.clear();
-  _loopHitsCache.clear();
-  _sortedHitsMap.clear();
   _instrRef = null;
   _trackSceneRef = null;
   _trackArrangementRef = null;
@@ -260,8 +262,6 @@ export function getStepsPerBeat(): number {
 export function cleanupInstrumentCache(id: string): void {
   _lastFired.delete(id);
   _lastApplied.delete(id);
-  _loopHitsCache.delete(id);
-  _sortedHitsMap.delete(id);
 }
 
 let _tickCount = 0;
@@ -469,6 +469,26 @@ function _tick(time: number): void {
       if (instrument.muted && !instrument.solo) continue;
     }
 
+    // ── Looper: continuous playback (one trigger per cycle) ──
+    if (instrument.type === 'looper') {
+      const startOffset = instrument.looperParams?.startOffset ?? 0;
+      const offsetSteps = Math.round(startOffset * loopSize);
+      const instStep = (globalStep + offsetSteps) % loopSize;
+
+      // Trigger sample playback at the start of each cycle
+      if (instStep === 0) {
+        triggerLooperContinuous(instrument, secondsPerStep, time, state);
+      }
+
+      // Progress for playhead/orb
+      const ed = state.looperEditors[instrument.id];
+      const loopIn = ed?.loopIn ?? 0;
+      const loopOut = ed?.loopOut ?? 1;
+      _instProgress[instrument.id] = loopIn + (instStep / loopSize) * (loopOut - loopIn);
+      continue;
+    }
+
+    // ── Synth/Sampler: per-step hit processing ──
     const { hitPositions, hits } = instrument;
     if (hits === 0 || hitPositions.length === 0) continue;
 
@@ -477,108 +497,25 @@ function _tick(time: number): void {
     }
     const fired = _lastFired.get(instrument.id)!;
 
-    // Apply loop start offset for looper instruments
-    const startOffset = instrument.type === 'looper' ? (instrument.looperParams?.startOffset ?? 0) : 0;
-    const offsetSteps = Math.round(startOffset * loopSize);
-    const instStep = (globalStep + offsetSteps) % loopSize;
+    const instStep = globalStep % loopSize;
 
-    // ── Tiled loop mode: when a loop region is active, tile its hits across the full pattern ──
-    if (instrument.type === 'looper') {
-      const editorState = state.looperEditors[instrument.id];
-      const loopIn = editorState?.loopIn ?? 0;
-      const loopOut = editorState?.loopOut ?? 1;
-      const hasLoopRegion = loopIn > 0 || loopOut < 1;
-
-      if (hasLoopRegion) {
-        // Use cached loopHits — recompute only when hitPositions/loopIn/loopOut change.
-        const cached = _loopHitsCache.get(instrument.id);
-        let loopHits: number[];
-        if (cached && cached.ref === hitPositions && cached.loopIn === loopIn && cached.loopOut === loopOut) {
-          loopHits = cached.sorted;
-        } else {
-          loopHits = [];
-          for (const hp of hitPositions) {
-            if (hp >= loopIn - 0.001 && hp <= loopOut + 0.001) {
-              loopHits.push(hp);
-            }
-          }
-          loopHits.sort((a, b) => a - b);
-          _loopHitsCache.set(instrument.id, { ref: hitPositions, loopIn, loopOut, sorted: loopHits });
-        }
-
-        if (loopHits.length > 0) {
-          const regionSize = loopOut - loopIn;
-          const regionSteps = Math.max(1, Math.round(regionSize * loopSize));
-
-          // Map current step to position within the tiled loop region
-          const loopRelStep = ((instStep % regionSteps) + regionSteps) % regionSteps;
-
-          for (let j = 0; j < loopHits.length; j++) {
-            const hitRelNorm = (loopHits[j] - loopIn) / regionSize;
-            const hitRelStep = Math.round(hitRelNorm * regionSteps) % regionSteps;
-
-            if (hitRelStep === loopRelStep) {
-              const fireKey = j + 10000; // offset to avoid collision with non-tiled indices
-              if (fired.get(fireKey) === globalStep) continue;
-              fired.set(fireKey, globalStep);
-
-              // Available time until next hit in the tiled pattern
-              let nextRelStep: number;
-              if (j + 1 < loopHits.length) {
-                nextRelStep = Math.round(((loopHits[j + 1] - loopIn) / regionSize) * regionSteps);
-              } else {
-                // Wrap: next is the first hit of the next repetition
-                nextRelStep = regionSteps + Math.round(((loopHits[0] - loopIn) / regionSize) * regionSteps);
-              }
-              const tiledAvailSec = Math.max(0.01, (nextRelStep - hitRelStep) * secondsPerStep);
-
-              triggerLooperSlice(instrument, j, loopHits, secondsPerStep, time, state, tiledAvailSec);
-            }
-          }
-
-          // Update progress to cycle the playhead within the loop region
-          _instProgress[instrument.id] = loopIn + (loopRelStep / regionSteps) * regionSize;
-        }
-
-        continue; // Skip normal hit iteration for this instrument
-      }
-    }
-
-    // ── Normal hit processing (non-loopers and loopers without loop region) ──
     for (let i = 0; i < hitPositions.length; i++) {
       const hitPos = hitPositions[i];
       const hitStep = Math.round(hitPos * loopSize) % loopSize;
 
       if (hitStep === instStep) {
-        // Skip if this exact hit was already fired on this globalStep
         if (fired.get(i) === globalStep) continue;
         fired.set(i, globalStep);
 
-        if (instrument.type === 'looper') {
-          // Use cached sorted hits — recompute only when hitPositions ref changes.
-          const sc = _sortedHitsMap.get(instrument.id);
-          let sorted: number[];
-          if (sc && sc.ref === hitPositions) {
-            sorted = sc.sorted;
-          } else {
-            sorted = [...hitPositions].sort((a, b) => a - b);
-            _sortedHitsMap.set(instrument.id, { ref: hitPositions, sorted });
-          }
-          const sortedIdx = sorted.indexOf(hitPos);
-          if (sortedIdx >= 0) {
-            triggerLooperSlice(instrument, sortedIdx, sorted, secondsPerStep, time, state);
-          }
-        } else {
-          const notes = state.gridNotes[instrument.id]?.[i];
-          if (notes && notes.length > 0) {
-            const glide = state.gridGlide[instrument.id]?.[i] ?? false;
-            const noteLength = state.gridLengths[instrument.id]?.[i] ?? 1;
-            const velocity = state.gridVelocities[instrument.id]?.[i] ?? 100;
-            const noteDuration = secondsPerStep * noteLength * 0.9;
+        const notes = state.gridNotes[instrument.id]?.[i];
+        if (notes && notes.length > 0) {
+          const glide = state.gridGlide[instrument.id]?.[i] ?? false;
+          const noteLength = state.gridLengths[instrument.id]?.[i] ?? 1;
+          const velocity = state.gridVelocities[instrument.id]?.[i] ?? 100;
+          const noteDuration = secondsPerStep * noteLength * 0.9;
 
-            for (const midiNote of notes) {
-              triggerSuperdough(instrument, midiNote, noteDuration, time, glide, velocity, state);
-            }
+          for (const midiNote of notes) {
+            triggerSuperdough(instrument, midiNote, noteDuration, time, glide, velocity, state);
           }
         }
       }

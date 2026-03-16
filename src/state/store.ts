@@ -16,8 +16,8 @@ import { preloadSample, preloadCustomSample } from '../audio/sampleCache';
 import { SAMPLE_BASE_URL } from '../audio/sampleBaseUrl';
 import type { LooperParams, LooperEditorState } from '../types/looper';
 import { DEFAULT_LOOPER_PARAMS, createLooperEditorState } from '../types/looper';
-import { sliceBuffer, deleteRange, silenceRange, insertBuffer, extractPeaks, bufferToBlobUrl, revokeBlobUrl } from '../audio/bufferOps';
-import { detectTransients, detectTransientTails, mapTransientsToGrid, estimateLoopSize, detectBpm } from '../audio/transientDetector';
+import { extractPeaks, bufferToBlobUrl, revokeBlobUrl } from '../audio/bufferOps';
+import { estimateLoopSize, detectBpm } from '../audio/transientDetector';
 import { getCachedBpm, setCachedBpm } from '../audio/bpmCache';
 import type { OrbitrackSet } from '../types/storage';
 import { base64ToBlob } from '../storage/serializer';
@@ -224,7 +224,6 @@ export interface StoreState {
   setInstruments: (instruments: Instrument[]) => void;
   updateInstrument: (id: string, updates: Partial<Instrument>) => void;
   setHitCount: (id: string, hits: number) => void;
-  setHitPosition: (id: string, hitIndex: number, position: number) => void;
   addHit: (id: string, position: number) => void;
   addSamplerHit: (id: string, position: number, midiNote?: number) => void;
   removeHit: (id: string, hitIndex: number) => void;
@@ -416,19 +415,8 @@ export interface StoreState {
   assignLoop: (instrumentId: string, loopPath: string, displayName: string) => void;
   updateLooperParams: (instrumentId: string, params: Partial<LooperParams>) => void;
   initLooperEditor: (instrumentId: string, buffer: AudioBuffer) => void;
-  setLooperSelection: (instrumentId: string, start: number | null, end: number | null) => void;
   setLooperZoom: (instrumentId: string, viewStart: number, viewEnd: number) => void;
-  looperCut: (instrumentId: string) => void;
-  looperCopy: (instrumentId: string) => void;
-  looperPaste: (instrumentId: string) => void;
-  looperTrim: (instrumentId: string) => void;
-  looperDelete: (instrumentId: string) => void;
-  looperSilence: (instrumentId: string) => void;
-  looperUndo: (instrumentId: string) => void;
-  redetectTransients: (instrumentId: string, sensitivity: number) => void;
   setLooperLoop: (instrumentId: string, loopIn: number, loopOut: number) => void;
-  setLooperCursor: (instrumentId: string, position: number | null) => void;
-  setLooperPeakResolution: (instrumentId: string, resolution: number) => void;
   setDetectedBpm: (instrumentId: string, bpm: number) => void;
   setLooperBpmMultiplier: (instrumentId: string, multiplier: number) => void;
   autoMatchBpm: (instrumentId: string) => void;
@@ -682,22 +670,6 @@ export const useStore = create<StoreState>((set, get) => ({
           i.id === id ? { ...i, hits, hitPositions: generateEvenHits(hits) } : i
         ),
         gridNotes: { ...s.gridNotes, [id]: newNotes },
-      };
-    }),
-
-  setHitPosition: (id, hitIndex, position) =>
-    set((s) => {
-      const inst = s.instruments.find((i) => i.id === id);
-      if (!inst) return s;
-      const norm = ((position % 1) + 1) % 1;
-      const final = s.snapEnabled ? snapToGrid(norm, inst.loopSize) : norm;
-      return {
-        instruments: s.instruments.map((i) => {
-          if (i.id !== id) return i;
-          const newPositions = [...i.hitPositions];
-          newPositions[hitIndex] = final;
-          return { ...i, hitPositions: newPositions };
-        }),
       };
     }),
 
@@ -1335,25 +1307,13 @@ export const useStore = create<StoreState>((set, get) => ({
           gridLengths: { ...s.gridLengths, [id]: s.gridLengths[id] || [] },
         };
       } else {
-        // Re-quantize hit positions to the new grid to avoid bunching/zero-length slices
-        const requantized = mapTransientsToGrid(inst.hitPositions, newLoopSize);
-        const newHits = requantized.length;
+        // Just update loopSize; hit positions stay as-is
         newInstruments = s.instruments.map((i) =>
           i.id !== id ? i : {
             ...i,
             loopSize: newLoopSize,
-            hits: newHits,
-            hitPositions: requantized,
           }
         );
-        if (newHits < inst.hits) {
-          const trimArr = <T,>(arr: T[]) => arr.slice(0, newHits);
-          gridUpdate = {
-            gridNotes: { ...s.gridNotes, [id]: trimArr(s.gridNotes[id] || []) },
-            gridGlide: { ...s.gridGlide, [id]: trimArr(s.gridGlide[id] || []) },
-            gridLengths: { ...s.gridLengths, [id]: trimArr(s.gridLengths[id] || []) },
-          };
-        }
       }
 
       return { instruments: newInstruments, ...gridUpdate };
@@ -1654,9 +1614,7 @@ export const useStore = create<StoreState>((set, get) => ({
       // Init looper editor directly with the captured buffer (no fetch needed)
       get().initLooperEditor(inst.id, buffer);
 
-      // Override to natural playback: single hit covering the full buffer at 1x speed.
-      // Without this, initLooperEditor's transient detection slices the recording
-      // and triggerLooperSlice time-stretches each slice to fit grid slots.
+      // Override loopSize to match the natural duration of the captured buffer.
       const bpm = get().bpm;
       const stepsPerBeat = get().stepsPerBeat;
       const secondsPerStep = 60 / (bpm * stepsPerBeat);
@@ -2304,10 +2262,6 @@ export const useStore = create<StoreState>((set, get) => ({
     const initialBpm = cachedBpm > 0 ? cachedBpm : 0;
     const stepsPerBeat = get().stepsPerBeat;
     const fallbackLoopSize = estimateLoopSize(buffer, projectBpm, initialBpm, stepsPerBeat);
-    const fallbackMaxPeaks = Math.min(fallbackLoopSize, 64);
-    const transients = detectTransients(buffer, 0.5, fallbackMaxPeaks);
-    const transientTails = detectTransientTails(buffer, transients);
-    const hitPositions = mapTransientsToGrid(transients, fallbackLoopSize);
 
     set((s) => ({
       looperEditors: {
@@ -2317,18 +2271,16 @@ export const useStore = create<StoreState>((set, get) => ({
           peakResolution: existingRes,
           audioBuffer: buffer,
           peaks,
-          transients,
-          transientTails,
         },
       },
       instruments: s.instruments.map((i) =>
         i.id === instrumentId
-          ? { ...i, hits: hitPositions.length, hitPositions, loopSize: fallbackLoopSize, detectedBpm: cachedBpm || i.detectedBpm }
+          ? { ...i, hits: 0, hitPositions: [], loopSize: fallbackLoopSize, detectedLoopSize: fallbackLoopSize, detectedBpm: cachedBpm || i.detectedBpm, stretchToSteps: true, looperParams: { ...(i.looperParams ?? DEFAULT_LOOPER_PARAMS), stretchToSteps: true } }
           : i
       ),
       gridNotes: {
         ...s.gridNotes,
-        [instrumentId]: hitPositions.map(() => [60]),
+        [instrumentId]: [],
       },
     }));
 
@@ -2363,47 +2315,18 @@ export const useStore = create<StoreState>((set, get) => ({
         return;
       }
 
-      const refinedMaxPeaks = Math.min(refinedLoopSize, 64);
-      const refinedTransients = detectTransients(buffer, 0.5, refinedMaxPeaks);
-      const refinedTails = detectTransientTails(buffer, refinedTransients);
-      const refinedHits = mapTransientsToGrid(refinedTransients, refinedLoopSize);
-
       set((s) => ({
-        looperEditors: {
-          ...s.looperEditors,
-          [instrumentId]: {
-            ...(s.looperEditors[instrumentId] ?? createLooperEditorState()),
-            transients: refinedTransients,
-            transientTails: refinedTails,
-          },
-        },
         instruments: s.instruments.map((i) =>
           i.id === instrumentId
-            ? { ...i, hits: refinedHits.length, hitPositions: refinedHits, loopSize: refinedLoopSize, detectedBpm }
+            ? { ...i, loopSize: refinedLoopSize, detectedLoopSize: refinedLoopSize, detectedBpm }
             : i
         ),
-        gridNotes: {
-          ...s.gridNotes,
-          [instrumentId]: refinedHits.map(() => [60]),
-        },
       }));
       if (import.meta.env.DEV) console.log(`[looper] BPM detected: ${detectedBpm.toFixed(1)}, loopSize: ${refinedLoopSize} (was ${fallbackLoopSize})`);
     }).catch((e) => {
       if (import.meta.env.DEV) console.warn('[looper] BPM detection error:', e);
     });
   },
-
-  setLooperSelection: (instrumentId, start, end) =>
-    set((s) => ({
-      looperEditors: {
-        ...s.looperEditors,
-        [instrumentId]: {
-          ...(s.looperEditors[instrumentId] ?? createLooperEditorState()),
-          selectionStart: start,
-          selectionEnd: end,
-        },
-      },
-    })),
 
   setLooperZoom: (instrumentId, viewStart, viewEnd) =>
     set((s) => ({
@@ -2424,366 +2347,10 @@ export const useStore = create<StoreState>((set, get) => ({
         [instrumentId]: {
           ...(s.looperEditors[instrumentId] ?? createLooperEditorState()),
           loopIn: Math.max(0, Math.min(1, loopIn)),
-          loopOut: Math.max(0, Math.min(1, loopOut)),
+          loopOut: Math.max(0, Math.min(1, Math.max(loopIn + 0.001, loopOut))),
         },
       },
     })),
-
-  setLooperCursor: (instrumentId, position) =>
-    set((s) => ({
-      looperEditors: {
-        ...s.looperEditors,
-        [instrumentId]: {
-          ...(s.looperEditors[instrumentId] ?? createLooperEditorState()),
-          cursorPosition: position != null ? Math.max(0, Math.min(1, position)) : null,
-        },
-      },
-    })),
-
-  setLooperPeakResolution: (instrumentId, resolution) => {
-    const editor = get().looperEditors[instrumentId];
-    if (!editor?.audioBuffer) return;
-    const clamped = Math.max(256, Math.min(2048, resolution));
-    const peaks = extractPeaks(editor.audioBuffer, clamped);
-    set((s) => ({
-      looperEditors: {
-        ...s.looperEditors,
-        [instrumentId]: {
-          ...(s.looperEditors[instrumentId] ?? createLooperEditorState()),
-          peakResolution: clamped,
-          peaks,
-        },
-      },
-    }));
-  },
-
-  looperCut: (instrumentId) => {
-    const editor = get().looperEditors[instrumentId];
-    if (!editor?.audioBuffer || editor.selectionStart == null || editor.selectionEnd == null) return;
-    const buf = editor.audioBuffer;
-    const startSample = Math.floor(editor.selectionStart * buf.length);
-    const endSample = Math.floor(editor.selectionEnd * buf.length);
-    const clipboard = sliceBuffer(buf, startSample, endSample);
-    const newBuffer = deleteRange(buf, startSample, endSample);
-    const peaks = extractPeaks(newBuffer, editor.peakResolution ?? 2048);
-    const undoStack = [...editor.undoStack, buf].slice(-20);
-
-    // Re-register with superdough
-    const inst = get().instruments.find((i) => i.id === instrumentId);
-    if (inst?.sampleName) {
-      const sampleKey = inst.samplePath ?? inst.sampleName;
-      const blobUrl = bufferToBlobUrl(newBuffer, sampleKey);
-      registerSampleForPlayback(sampleKey, blobUrl);
-    }
-
-    // Re-detect transients
-    const transients = detectTransients(newBuffer, 0.5, 16);
-    const transientTails = detectTransientTails(newBuffer, transients);
-    const gridSize = inst?.loopSize ?? 16;
-    const hitPositions = mapTransientsToGrid(transients, gridSize);
-
-    set((s) => ({
-      looperEditors: {
-        ...s.looperEditors,
-        [instrumentId]: {
-          ...editor,
-          audioBuffer: newBuffer,
-          peaks,
-          clipboard,
-          clipboardStart: Math.min(editor.selectionStart!, editor.selectionEnd!),
-          clipboardEnd: Math.max(editor.selectionStart!, editor.selectionEnd!),
-          undoStack,
-          transients,
-          transientTails,
-          selectionStart: null,
-          selectionEnd: null,
-        },
-      },
-      instruments: s.instruments.map((i) =>
-        i.id === instrumentId ? { ...i, hits: hitPositions.length, hitPositions } : i
-      ),
-      gridNotes: {
-        ...s.gridNotes,
-        [instrumentId]: hitPositions.map(() => [60]),
-      },
-    }));
-  },
-
-  looperCopy: (instrumentId) => {
-    const editor = get().looperEditors[instrumentId];
-    if (!editor?.audioBuffer || editor.selectionStart == null || editor.selectionEnd == null) return;
-    const buf = editor.audioBuffer;
-    const startSample = Math.floor(editor.selectionStart * buf.length);
-    const endSample = Math.floor(editor.selectionEnd * buf.length);
-    const clipboard = sliceBuffer(buf, startSample, endSample);
-
-    const clipStart = Math.min(editor.selectionStart, editor.selectionEnd);
-    const clipEnd = Math.max(editor.selectionStart, editor.selectionEnd);
-    set((s) => ({
-      looperEditors: {
-        ...s.looperEditors,
-        [instrumentId]: { ...editor, clipboard, clipboardStart: clipStart, clipboardEnd: clipEnd },
-      },
-    }));
-  },
-
-  looperPaste: (instrumentId) => {
-    const editor = get().looperEditors[instrumentId];
-    if (!editor?.audioBuffer || !editor.clipboard) return;
-    const buf = editor.audioBuffer;
-    const insertAt = editor.selectionStart != null
-      ? Math.floor(editor.selectionStart * buf.length)
-      : editor.cursorPosition != null
-        ? Math.floor(editor.cursorPosition * buf.length)
-        : buf.length;
-    const undoStack = [...editor.undoStack, buf].slice(-20);
-    const newBuffer = insertBuffer(buf, editor.clipboard, insertAt);
-    const peaks = extractPeaks(newBuffer, editor.peakResolution ?? 2048);
-
-    const inst = get().instruments.find((i) => i.id === instrumentId);
-    if (inst?.sampleName) {
-      const sampleKey = inst.samplePath ?? inst.sampleName;
-      const blobUrl = bufferToBlobUrl(newBuffer, sampleKey);
-      registerSampleForPlayback(sampleKey, blobUrl);
-    }
-
-    const transients = detectTransients(newBuffer, 0.5, 16);
-    const transientTails = detectTransientTails(newBuffer, transients);
-    const gridSize = inst?.loopSize ?? 16;
-    const hitPositions = mapTransientsToGrid(transients, gridSize);
-
-    set((s) => ({
-      looperEditors: {
-        ...s.looperEditors,
-        [instrumentId]: {
-          ...editor,
-          audioBuffer: newBuffer,
-          peaks,
-          undoStack,
-          transients,
-          transientTails,
-          clipboardStart: null,
-          clipboardEnd: null,
-          selectionStart: null,
-          selectionEnd: null,
-        },
-      },
-      instruments: s.instruments.map((i) =>
-        i.id === instrumentId ? { ...i, hits: hitPositions.length, hitPositions } : i
-      ),
-      gridNotes: {
-        ...s.gridNotes,
-        [instrumentId]: hitPositions.map(() => [60]),
-      },
-    }));
-  },
-
-  looperTrim: (instrumentId) => {
-    const editor = get().looperEditors[instrumentId];
-    if (!editor?.audioBuffer || editor.selectionStart == null || editor.selectionEnd == null) return;
-    const buf = editor.audioBuffer;
-    const startSample = Math.floor(editor.selectionStart * buf.length);
-    const endSample = Math.floor(editor.selectionEnd * buf.length);
-    const undoStack = [...editor.undoStack, buf].slice(-20);
-    const newBuffer = sliceBuffer(buf, startSample, endSample);
-    const peaks = extractPeaks(newBuffer, editor.peakResolution ?? 2048);
-
-    const inst = get().instruments.find((i) => i.id === instrumentId);
-    if (inst?.sampleName) {
-      const sampleKey = inst.samplePath ?? inst.sampleName;
-      const blobUrl = bufferToBlobUrl(newBuffer, sampleKey);
-      registerSampleForPlayback(sampleKey, blobUrl);
-    }
-
-    const transients = detectTransients(newBuffer, 0.5, 16);
-    const transientTails = detectTransientTails(newBuffer, transients);
-    const gridSize = inst?.loopSize ?? 16;
-    const hitPositions = mapTransientsToGrid(transients, gridSize);
-
-    set((s) => ({
-      looperEditors: {
-        ...s.looperEditors,
-        [instrumentId]: {
-          ...editor,
-          audioBuffer: newBuffer,
-          peaks,
-          undoStack,
-          transients,
-          transientTails,
-          selectionStart: null,
-          selectionEnd: null,
-          viewStart: 0,
-          viewEnd: 1,
-        },
-      },
-      instruments: s.instruments.map((i) =>
-        i.id === instrumentId ? { ...i, hits: hitPositions.length, hitPositions } : i
-      ),
-      gridNotes: {
-        ...s.gridNotes,
-        [instrumentId]: hitPositions.map(() => [60]),
-      },
-    }));
-  },
-
-  looperDelete: (instrumentId) => {
-    const editor = get().looperEditors[instrumentId];
-    if (!editor?.audioBuffer || editor.selectionStart == null || editor.selectionEnd == null) return;
-    const buf = editor.audioBuffer;
-    const startSample = Math.floor(editor.selectionStart * buf.length);
-    const endSample = Math.floor(editor.selectionEnd * buf.length);
-    const undoStack = [...editor.undoStack, buf].slice(-20);
-    const newBuffer = deleteRange(buf, startSample, endSample);
-    const peaks = extractPeaks(newBuffer, editor.peakResolution ?? 2048);
-
-    const inst = get().instruments.find((i) => i.id === instrumentId);
-    if (inst?.sampleName) {
-      const sampleKey = inst.samplePath ?? inst.sampleName;
-      const blobUrl = bufferToBlobUrl(newBuffer, sampleKey);
-      registerSampleForPlayback(sampleKey, blobUrl);
-    }
-
-    const transients = detectTransients(newBuffer, 0.5, 16);
-    const transientTails = detectTransientTails(newBuffer, transients);
-    const gridSize = inst?.loopSize ?? 16;
-    const hitPositions = mapTransientsToGrid(transients, gridSize);
-
-    set((s) => ({
-      looperEditors: {
-        ...s.looperEditors,
-        [instrumentId]: {
-          ...editor,
-          audioBuffer: newBuffer,
-          peaks,
-          undoStack,
-          transients,
-          transientTails,
-          selectionStart: null,
-          selectionEnd: null,
-        },
-      },
-      instruments: s.instruments.map((i) =>
-        i.id === instrumentId ? { ...i, hits: hitPositions.length, hitPositions } : i
-      ),
-      gridNotes: {
-        ...s.gridNotes,
-        [instrumentId]: hitPositions.map(() => [60]),
-      },
-    }));
-  },
-
-  looperSilence: (instrumentId) => {
-    const editor = get().looperEditors[instrumentId];
-    if (!editor?.audioBuffer || editor.selectionStart == null || editor.selectionEnd == null) return;
-    const buf = editor.audioBuffer;
-    const startSample = Math.floor(editor.selectionStart * buf.length);
-    const endSample = Math.floor(editor.selectionEnd * buf.length);
-    const undoStack = [...editor.undoStack, buf].slice(-20);
-    const newBuffer = silenceRange(buf, startSample, endSample);
-    const peaks = extractPeaks(newBuffer, editor.peakResolution ?? 2048);
-
-    const inst = get().instruments.find((i) => i.id === instrumentId);
-    if (inst?.sampleName) {
-      const sampleKey = inst.samplePath ?? inst.sampleName;
-      const blobUrl = bufferToBlobUrl(newBuffer, sampleKey);
-      registerSampleForPlayback(sampleKey, blobUrl);
-    }
-
-    const transients = detectTransients(newBuffer, 0.5, 16);
-    const transientTails = detectTransientTails(newBuffer, transients);
-    const gridSize = inst?.loopSize ?? 16;
-    const hitPositions = mapTransientsToGrid(transients, gridSize);
-
-    set((s) => ({
-      looperEditors: {
-        ...s.looperEditors,
-        [instrumentId]: {
-          ...editor,
-          audioBuffer: newBuffer,
-          peaks,
-          undoStack,
-          transients,
-          transientTails,
-          selectionStart: null,
-          selectionEnd: null,
-        },
-      },
-      instruments: s.instruments.map((i) =>
-        i.id === instrumentId ? { ...i, hits: hitPositions.length, hitPositions } : i
-      ),
-      gridNotes: {
-        ...s.gridNotes,
-        [instrumentId]: hitPositions.map(() => [60]),
-      },
-    }));
-  },
-
-  looperUndo: (instrumentId) => {
-    const editor = get().looperEditors[instrumentId];
-    if (!editor?.undoStack.length) return;
-    const undoStack = [...editor.undoStack];
-    const buffer = undoStack.pop()!;
-    const peaks = extractPeaks(buffer, editor.peakResolution ?? 2048);
-
-    const inst = get().instruments.find((i) => i.id === instrumentId);
-    if (inst?.sampleName) {
-      const sampleKey = inst.samplePath ?? inst.sampleName;
-      const blobUrl = bufferToBlobUrl(buffer, sampleKey);
-      registerSampleForPlayback(sampleKey, blobUrl);
-    }
-
-    const transients = detectTransients(buffer, 0.5, 16);
-    const transientTails = detectTransientTails(buffer, transients);
-    const gridSize = inst?.loopSize ?? 16;
-    const hitPositions = mapTransientsToGrid(transients, gridSize);
-
-    set((s) => ({
-      looperEditors: {
-        ...s.looperEditors,
-        [instrumentId]: {
-          ...editor,
-          audioBuffer: buffer,
-          peaks,
-          undoStack,
-          transients,
-          transientTails,
-          selectionStart: null,
-          selectionEnd: null,
-        },
-      },
-      instruments: s.instruments.map((i) =>
-        i.id === instrumentId ? { ...i, hits: hitPositions.length, hitPositions } : i
-      ),
-      gridNotes: {
-        ...s.gridNotes,
-        [instrumentId]: hitPositions.map(() => [60]),
-      },
-    }));
-  },
-
-  redetectTransients: (instrumentId, sensitivity) => {
-    const editor = get().looperEditors[instrumentId];
-    if (!editor?.audioBuffer) return;
-    const transients = detectTransients(editor.audioBuffer, sensitivity, 16);
-    const transientTails = detectTransientTails(editor.audioBuffer, transients);
-    const inst = get().instruments.find((i) => i.id === instrumentId);
-    const gridSize = inst?.loopSize ?? 16;
-    const hitPositions = mapTransientsToGrid(transients, gridSize);
-
-    set((s) => ({
-      looperEditors: {
-        ...s.looperEditors,
-        [instrumentId]: { ...editor, transients, transientTails },
-      },
-      instruments: s.instruments.map((i) =>
-        i.id === instrumentId ? { ...i, hits: hitPositions.length, hitPositions } : i
-      ),
-      gridNotes: {
-        ...s.gridNotes,
-        [instrumentId]: hitPositions.map(() => [60]),
-      },
-    }));
-  },
 
   setDetectedBpm: (instrumentId, bpm) => {
     const inst = get().instruments.find((i) => i.id === instrumentId);
@@ -2806,27 +2373,14 @@ export const useStore = create<StoreState>((set, get) => ({
     const projectBpm = get().bpm;
     const effectiveBpm = detectedBpm * multiplier;
     const newLoopSize = estimateLoopSize(editor.audioBuffer, projectBpm, effectiveBpm, get().stepsPerBeat);
-    const maxPeaks = Math.min(newLoopSize, 64);
-    const transients = detectTransients(editor.audioBuffer, 0.5, maxPeaks);
-    const transientTails = detectTransientTails(editor.audioBuffer, transients);
-    const hitPositions = mapTransientsToGrid(transients, newLoopSize);
 
     set((s) => ({
       instruments: s.instruments.map((i) =>
         i.id === instrumentId
-          ? { ...i, bpmMultiplier: multiplier, loopSize: newLoopSize, hits: hitPositions.length, hitPositions }
+          ? { ...i, bpmMultiplier: multiplier, loopSize: newLoopSize }
           : i
       ),
-      looperEditors: {
-        ...s.looperEditors,
-        [instrumentId]: { ...editor, transients, transientTails },
-      },
-      gridNotes: {
-        ...s.gridNotes,
-        [instrumentId]: hitPositions.map(() => [60]),
-      },
     }));
-
   },
 
   autoMatchBpm: (instrumentId) => {

@@ -1,6 +1,6 @@
 export interface LooperParams {
   gain: number;           // 0-1
-  speed: number;          // master playback rate multiplier
+  speed: number;          // manual playback rate multiplier (when stretch OFF)
   attack: number;         // 0-2s
   release: number;        // 0-2s
   pan: number;            // -1 to 1
@@ -8,8 +8,9 @@ export interface LooperParams {
   resonance: number;      // 0-50
   pitchSemitones: number; // -24 to +24, pitch offset in semitones
   reverse: boolean;       // reverse playback
-  startOffset: number;    // 0-1 normalized, shifts loop start point
-  stretchToSteps: boolean; // time-stretch slices to fill grid slots
+  startOffset: number;    // 0-1 normalized, shifts loop start point (phase)
+  stretchToSteps: boolean; // time-stretch sample to fill grid steps
+  keepPitch: boolean;     // pitch-independent speed via phase vocoder
 }
 
 export const DEFAULT_LOOPER_PARAMS: LooperParams = {
@@ -24,25 +25,17 @@ export const DEFAULT_LOOPER_PARAMS: LooperParams = {
   reverse: false,
   startOffset: 0,
   stretchToSteps: false,
+  keepPitch: false,
 };
 
 export interface LooperEditorState {
   audioBuffer: AudioBuffer | null;
   peaks: Float32Array | null;
   peakResolution: number;           // number of peak buckets (256-2048)
-  selectionStart: number | null;    // normalized 0-1
-  selectionEnd: number | null;
   loopIn: number;                   // loop region start, normalized 0-1
   loopOut: number;                  // loop region end, normalized 0-1
-  cursorPosition: number | null;    // paste cursor, normalized 0-1
-  clipboard: AudioBuffer | null;
-  clipboardStart: number | null;    // source region start, normalized 0-1
-  clipboardEnd: number | null;      // source region end, normalized 0-1
   viewStart: number;                // zoom range 0-1
   viewEnd: number;
-  transients: number[];             // detected transient positions [0..1]
-  transientTails: number[];         // detected tail positions [0..1], parallel to transients
-  undoStack: AudioBuffer[];
 }
 
 export function createLooperEditorState(): LooperEditorState {
@@ -50,18 +43,9 @@ export function createLooperEditorState(): LooperEditorState {
     audioBuffer: null,
     peaks: null,
     peakResolution: 2048,
-    selectionStart: null,
-    selectionEnd: null,
     loopIn: 0,
     loopOut: 1,
-    cursorPosition: null,
-    clipboard: null,
-    clipboardStart: null,
-    clipboardEnd: null,
     viewStart: 0,
     viewEnd: 1,
-    transients: [],
-    transientTails: [],
-    undoStack: [],
   };
 }

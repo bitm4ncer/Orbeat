@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useStore } from '../../state/store';
 import { LooperToolbar } from './LooperToolbar';
+import { Knob } from './Knob';
+import { DEFAULT_LOOPER_PARAMS } from '../../types/looper';
 
 const HANDLE_ZONE_HEIGHT = 14; // only top 14px is the drag handle for markers
 
@@ -12,24 +14,17 @@ export function LooperEditor() {
   const instrumentProgress = useStore((s) => selectedId ? s.instrumentProgress[selectedId] ?? 0 : 0);
   const isPlaying = useStore((s) => s.isPlaying);
 
-  const setLooperSelection = useStore((s) => s.setLooperSelection);
   const setLooperZoom = useStore((s) => s.setLooperZoom);
-  const setLooperCursor = useStore((s) => s.setLooperCursor);
-  const setHitPosition = useStore((s) => s.setHitPosition);
-  const looperCut = useStore((s) => s.looperCut);
-  const looperCopy = useStore((s) => s.looperCopy);
-  const looperPaste = useStore((s) => s.looperPaste);
-  const looperDelete = useStore((s) => s.looperDelete);
-  const looperSilence = useStore((s) => s.looperSilence);
-  const looperUndo = useStore((s) => s.looperUndo);
+  const updateLooperParams = useStore((s) => s.updateLooperParams);
+  const setLoopSize = useStore((s) => s.setLoopSize);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number>(0);
-  const dragRef = useRef<{ type: 'select' | 'marker' | 'loopIn' | 'loopOut'; startNorm: number; markerIdx?: number } | null>(null);
+  const dragRef = useRef<{ type: 'loopIn' | 'loopOut'; startNorm: number } | null>(null);
   const drawRef = useRef<() => void>(() => {});
 
-  const [sensitivity, setSensitivity] = useState(0.5);
+  const [cursorStyle, setCursorStyle] = useState<string>('crosshair');
 
   const color = instrument?.color ?? '#7dd3fc';
   const viewStart = editor?.viewStart ?? 0;
@@ -75,192 +70,144 @@ export function LooperEditor() {
     }
 
     const peaks = editor.peaks;
-    const mid = height / 2;
+    const RULER_HEIGHT = 18; // step ruler at top
+    const mid = (height + RULER_HEIGHT) / 2;
+    const waveTop = RULER_HEIGHT;
+    const waveHeight = height - RULER_HEIGHT;
+    const halfWave = waveHeight * 0.45; // max amplitude from center
     const loopIn = editor.loopIn ?? 0;
     const loopOut = editor.loopOut ?? 1;
     const hasLoop = loopIn > 0 || loopOut < 1;
     const regionSize = loopOut - loopIn;
     const loopSize = instrument.loopSize;
-    const stepsPerBeat = Math.round(loopSize / 4);
+    const stepsPerBeat = Math.max(1, Math.round(loopSize / 4));
+    const isStretched = instrument.looperParams?.stretchToSteps ?? false;
+    const barW = Math.max(1, width / peaks.length * (1 / viewRange));
 
-    // ── Beat grid lines ──
+    // ── Step ruler background ──
+    ctx.fillStyle = '#0a0a14';
+    ctx.fillRect(0, 0, width, RULER_HEIGHT);
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, RULER_HEIGHT); ctx.lineTo(width, RULER_HEIGHT); ctx.stroke();
+
+    // ── Beat grid lines + step ruler labels ──
+    const stepsInView = loopSize * viewRange;
+    const showAllStepNums = stepsInView <= 64; // show step numbers when not too dense
+    const showBeatNums = stepsInView <= 256;
+
     for (let step = 0; step <= loopSize; step++) {
       const norm = step / loopSize;
-      if (norm < viewStart || norm > viewEnd) continue;
+      if (norm < viewStart - 0.01 || norm > viewEnd + 0.01) continue;
       const x = ((norm - viewStart) / viewRange) * width;
-      const isBar = step > 0 && step % loopSize === 0;
+      const isBar = step % (stepsPerBeat * 4) === 0;
       const isBeat = step % stepsPerBeat === 0;
 
-      if (isBar) {
-        ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+      // Grid lines in waveform area
+      if (isBar && step > 0) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.20)';
         ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
-        const barNum = Math.floor(step / loopSize) + 1;
-        ctx.fillStyle = 'rgba(255,255,255,0.3)';
-        ctx.font = '9px monospace';
-        ctx.fillText(String(barNum), x + 3, 10);
+        ctx.beginPath(); ctx.moveTo(x, RULER_HEIGHT); ctx.lineTo(x, height); ctx.stroke();
       } else if (isBeat) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x, RULER_HEIGHT); ctx.lineTo(x, height); ctx.stroke();
+      } else {
+        ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x, RULER_HEIGHT); ctx.lineTo(x, height); ctx.stroke();
+      }
+
+      // Ruler tick marks + labels
+      if (isBar) {
+        const barNum = Math.floor(step / (stepsPerBeat * 4)) + 1;
+        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, RULER_HEIGHT); ctx.stroke();
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(`${barNum}`, x + 3, 11);
+      } else if (isBeat && showBeatNums) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x, RULER_HEIGHT - 6); ctx.lineTo(x, RULER_HEIGHT); ctx.stroke();
+        if (showAllStepNums) {
+          const beatInBar = Math.floor((step % (stepsPerBeat * 4)) / stepsPerBeat) + 1;
+          ctx.fillStyle = 'rgba(255,255,255,0.25)';
+          ctx.font = '7px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText(`.${beatInBar}`, x, 11);
+        }
+      } else if (showAllStepNums && stepsInView <= 32) {
+        // Small tick for sub-beat steps when zoomed in
         ctx.strokeStyle = 'rgba(255,255,255,0.08)';
         ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
-      } else {
-        ctx.strokeStyle = 'rgba(255,255,255,0.03)';
-        ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, RULER_HEIGHT - 3); ctx.lineTo(x, RULER_HEIGHT); ctx.stroke();
       }
     }
+
+    // ── Stretch mode indicator on ruler ──
+    if (isStretched) {
+      ctx.fillStyle = 'rgba(34, 211, 238, 0.12)';
+      ctx.fillRect(0, 0, width, RULER_HEIGHT);
+      ctx.fillStyle = 'rgba(34, 211, 238, 0.5)';
+      ctx.font = '8px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText('STRETCH', width - 4, 11);
+    }
+
+    // ── Steps count badge ──
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${loopSize} steps`, 4, 11);
 
     // ── Loop region dimming (outside loop is darkened) ──
     if (hasLoop) {
       const inX = ((loopIn - viewStart) / viewRange) * width;
       const outX = ((loopOut - viewStart) / viewRange) * width;
       ctx.fillStyle = 'rgba(0,0,0,0.35)';
-      if (inX > 0) ctx.fillRect(0, 0, Math.max(0, inX), height);
-      if (outX < width) ctx.fillRect(Math.min(width, outX), 0, width - Math.min(width, outX), height);
+      if (inX > 0) ctx.fillRect(0, waveTop, Math.max(0, inX), waveHeight);
+      if (outX < width) ctx.fillRect(Math.min(width, outX), waveTop, width - Math.min(width, outX), waveHeight);
     }
 
-    // ── Selection highlight ──
-    const selStart = editor.selectionStart;
-    const selEnd = editor.selectionEnd;
-    if (selStart != null && selEnd != null) {
-      const sx = ((Math.min(selStart, selEnd) - viewStart) / viewRange) * width;
-      const ex = ((Math.max(selStart, selEnd) - viewStart) / viewRange) * width;
-      ctx.fillStyle = `${color}20`;
-      ctx.fillRect(sx, 0, ex - sx, height);
-    }
+    // ── Waveform scaling ──
+    // When stretch is OFF: scale by detectedLoopSize/loopSize and pitch
+    // When stretch is ON: sample fills grid but pitch still affects visual length
+    const detectedLS = instrument.detectedLoopSize ?? loopSize;
+    const pitchRatio = Math.pow(2, (instrument.looperParams?.pitchSemitones ?? 0) / 12);
+    const baseScale = isStretched ? 1 : detectedLS / loopSize;
+    const sampleScale = baseScale / pitchRatio; // pitch up = shorter, pitch down = longer
 
-    // ── Clipboard region indicator ──
-    const clipStart = editor.clipboardStart;
-    const clipEnd = editor.clipboardEnd;
-    if (clipStart != null && clipEnd != null && editor.clipboard) {
-      const csX = ((clipStart - viewStart) / viewRange) * width;
-      const ceX = ((clipEnd - viewStart) / viewRange) * width;
-      ctx.fillStyle = `${color}12`;
-      ctx.fillRect(csX, 0, ceX - csX, height);
-      ctx.strokeStyle = `${color}40`;
-      ctx.lineWidth = 1;
-      ctx.setLineDash([3, 3]);
-      ctx.strokeRect(csX, 0, ceX - csX, height);
-      ctx.setLineDash([]);
-    }
-
-    // ── Build warp map: map buffer positions to grid positions per slice ──
-    const hitPositions = [...instrument.hitPositions].sort((a: number, b: number) => a - b);
-    const barW = Math.max(1, width / peaks.length * (1 / viewRange));
-
-    // Build slice mappings: for each slice, define buffer range → grid range
-    type SliceMap = { bufStart: number; bufEnd: number; gridStart: number; gridEnd: number };
-    const slices: SliceMap[] = [];
-
-    if (hitPositions.length > 0) {
-      for (let si = 0; si < hitPositions.length; si++) {
-        const bufStart = hitPositions[si];
-        const bufEnd = si + 1 < hitPositions.length ? hitPositions[si + 1] : 1;
-
-        // Grid positions: where this hit snaps to on the grid
-        const gridStart = Math.round(hitPositions[si] * loopSize) / loopSize;
-        const gridEnd = si + 1 < hitPositions.length
-          ? Math.round(hitPositions[si + 1] * loopSize) / loopSize
-          : 1;
-
-        slices.push({ bufStart, bufEnd, gridStart, gridEnd });
+    // ── Waveform rendering — simple unwarped at buffer positions ──
+    for (let i = 0; i < peaks.length; i++) {
+      const bufNorm = i / peaks.length; // position in buffer [0..1]
+      const displayNorm = bufNorm * sampleScale; // scaled position in grid
+      if (displayNorm < viewStart - 0.01 || displayNorm > viewEnd + 0.01) continue;
+      const x = ((displayNorm - viewStart) / viewRange) * width;
+      const amp = peaks[i] * halfWave;
+      const outsideLoop = hasLoop && (displayNorm < loopIn || displayNorm > loopOut);
+      if (outsideLoop) {
+        ctx.fillStyle = `${color}22`;
+      } else {
+        ctx.fillStyle = `${color}88`;
       }
+      ctx.fillRect(x, mid - amp, barW * sampleScale, amp * 2 || 1);
     }
 
-    // ── Ghost waveform (unwarped, very faint — shows original buffer layout) ──
-    if (slices.length > 0) {
-      for (let i = 0; i < peaks.length; i++) {
-        const norm = i / peaks.length;
-        if (norm < viewStart - 0.01 || norm > viewEnd + 0.01) continue;
-        const x = ((norm - viewStart) / viewRange) * width;
-        const amp = peaks[i] * mid * 0.9;
-        const outsideLoop = hasLoop && (norm < loopIn || norm > loopOut);
-        ctx.fillStyle = outsideLoop ? `${color}0a` : `${color}18`;
-        ctx.fillRect(x, mid - amp, barW, amp * 2 || 1);
-      }
-    }
-
-    // ── Warped waveform bars (main — peaks mapped from buffer to grid positions) ──
-    if (slices.length > 0) {
-      for (const slice of slices) {
-        const bufRange = slice.bufEnd - slice.bufStart;
-        const gridRange = slice.gridEnd - slice.gridStart;
-        if (bufRange <= 0 || gridRange <= 0) continue;
-        const stretchRatio = gridRange / bufRange;
-
-        // Color shift for extreme stretching
-        const isStretched = stretchRatio > 1.5;
-        const isCompressed = stretchRatio < 0.6;
-
-        const peakStart = Math.floor(slice.bufStart * peaks.length);
-        const peakEnd = Math.ceil(slice.bufEnd * peaks.length);
-
-        for (let p = peakStart; p < peakEnd && p < peaks.length; p++) {
-          const bufNorm = p / peaks.length;
-          // Map from buffer space to grid space
-          const fraction = (bufNorm - slice.bufStart) / bufRange;
-          const warpedNorm = slice.gridStart + fraction * gridRange;
-
-          if (warpedNorm < viewStart - 0.01 || warpedNorm > viewEnd + 0.01) continue;
-          const x = ((warpedNorm - viewStart) / viewRange) * width;
-          const amp = peaks[p] * mid * 0.9;
-
-          const outsideLoop = hasLoop && (bufNorm < loopIn || bufNorm > loopOut);
-          const inSelection = selStart != null && selEnd != null &&
-            bufNorm >= Math.min(selStart, selEnd) && bufNorm <= Math.max(selStart, selEnd);
-
-          if (outsideLoop) {
-            ctx.fillStyle = `${color}22`;
-          } else if (inSelection) {
-            ctx.fillStyle = color;
-          } else if (isStretched) {
-            ctx.fillStyle = `${color}70`; // slightly dimmer when heavily stretched
-          } else if (isCompressed) {
-            ctx.fillStyle = `${color}aa`; // brighter when compressed
-          } else {
-            ctx.fillStyle = `${color}88`;
-          }
-          ctx.fillRect(x, mid - amp, barW, amp * 2 || 1);
-        }
-
-        // (Gap indicators removed — slices now span full hit-to-hit range)
-      }
-    } else {
-      // No hit positions — draw unwarped waveform normally
-      for (let i = 0; i < peaks.length; i++) {
-        const norm = i / peaks.length;
-        if (norm < viewStart - 0.01 || norm > viewEnd + 0.01) continue;
-        const x = ((norm - viewStart) / viewRange) * width;
-        const amp = peaks[i] * mid * 0.9;
-        const outsideLoop = hasLoop && (norm < loopIn || norm > loopOut);
-        ctx.fillStyle = outsideLoop ? `${color}22` : `${color}88`;
-        ctx.fillRect(x, mid - amp, barW, amp * 2 || 1);
-      }
-    }
-
-    // ── Tiled ghost waveform (show loop region repeated outside its boundaries) ──
-    if (hasLoop && regionSize > 0.01) {
-      const regionPeakStart = Math.floor(loopIn * peaks.length);
-      const regionPeakEnd = Math.ceil(loopOut * peaks.length);
-      const regionPeakCount = regionPeakEnd - regionPeakStart;
-
-      if (regionPeakCount > 0) {
-        const maxTiles = Math.min(20, Math.ceil(1 / regionSize) + 1);
-        for (let t = -maxTiles; t <= maxTiles; t++) {
-          if (t === 0) continue;
-          const offset = t * regionSize;
-          for (let p = 0; p < regionPeakCount; p++) {
-            const srcIdx = regionPeakStart + p;
-            if (srcIdx < 0 || srcIdx >= peaks.length) continue;
-            const ghostNorm = srcIdx / peaks.length + offset;
-            if (ghostNorm < 0 || ghostNorm > 1) continue;
-            if (ghostNorm < viewStart - 0.01 || ghostNorm > viewEnd + 0.01) continue;
-            const x = ((ghostNorm - viewStart) / viewRange) * width;
-            const amp = peaks[srcIdx] * mid * 0.9;
-            ctx.fillStyle = `${color}15`;
-            ctx.fillRect(x, mid - amp, barW, amp * 2 || 1);
-          }
-        }
+    // ── Empty zone dimming (when sample doesn't fill full grid) ──
+    if (sampleScale < 1) {
+      const emptyStartX = ((sampleScale - viewStart) / viewRange) * width;
+      if (emptyStartX < width) {
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.fillRect(Math.max(0, emptyStartX), waveTop, width - Math.max(0, emptyStartX), waveHeight);
+        // Dashed separator line at sample boundary
+        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(emptyStartX, waveTop); ctx.lineTo(emptyStartX, height); ctx.stroke();
+        ctx.setLineDash([]);
       }
     }
 
@@ -268,63 +215,6 @@ export function LooperEditor() {
     ctx.strokeStyle = 'rgba(255,255,255,0.06)';
     ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(0, mid); ctx.lineTo(width, mid); ctx.stroke();
-
-    // ── Tile boundary lines (show where each loop repetition starts) ──
-    if (hasLoop && regionSize > 0.01) {
-      const maxTiles = Math.min(20, Math.ceil(1 / regionSize) + 1);
-      for (let t = -maxTiles; t <= maxTiles; t++) {
-        if (t === 0) continue;
-        const boundary = loopIn + t * regionSize;
-        if (boundary <= 0.001 || boundary >= 0.999) continue;
-        // Skip boundaries that overlap with loop markers
-        if (Math.abs(boundary - loopIn) < 0.002 || Math.abs(boundary - loopOut) < 0.002) continue;
-        if (boundary < viewStart || boundary > viewEnd) continue;
-        const x = ((boundary - viewStart) / viewRange) * width;
-        ctx.strokeStyle = 'rgba(34, 211, 238, 0.12)';
-        ctx.lineWidth = 1;
-        ctx.setLineDash([3, 5]);
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
-        ctx.setLineDash([]);
-        // Tile repetition number
-        const tileNum = t > 0 ? t + 1 : t;
-        ctx.fillStyle = 'rgba(34, 211, 238, 0.2)';
-        ctx.font = '8px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText(`×${Math.abs(tileNum)}`, x, height - 3);
-      }
-    }
-
-    // ── Active slice highlight during playback ──
-    if (isPlaying && hasLoop) {
-      const playNorm = instrumentProgress;
-      const hitPositions = instrument.hitPositions;
-      const loopHits = hitPositions
-        .filter((h: number) => h >= loopIn - 0.001 && h <= loopOut + 0.001)
-        .sort((a: number, b: number) => a - b);
-
-      if (loopHits.length > 0) {
-        // Find which slice the playhead is in
-        let sliceStart = loopIn;
-        let sliceEnd = loopHits.length > 0 ? loopHits[0] : loopOut;
-        for (let i = 0; i < loopHits.length; i++) {
-          if (playNorm >= loopHits[i] - 0.001) {
-            sliceStart = loopHits[i];
-            sliceEnd = i + 1 < loopHits.length ? loopHits[i + 1] : loopOut;
-          }
-        }
-
-        // Draw active slice glow
-        const sx = ((sliceStart - viewStart) / viewRange) * width;
-        const ex = ((sliceEnd - viewStart) / viewRange) * width;
-        if (ex > 0 && sx < width) {
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.04)';
-          ctx.fillRect(Math.max(0, sx), 0, Math.min(width, ex) - Math.max(0, sx), height);
-          // Top accent bar for active slice
-          ctx.fillStyle = `${color}50`;
-          ctx.fillRect(Math.max(0, sx), 0, Math.min(width, ex) - Math.max(0, sx), 2);
-        }
-      }
-    }
 
     // ── Loop in/out markers ──
     if (hasLoop) {
@@ -368,75 +258,6 @@ export function LooperEditor() {
       }
     }
 
-    // ── Hit position markers (original) ──
-    const markerPositions = instrument.hitPositions;
-    for (let i = 0; i < markerPositions.length; i++) {
-      const norm = markerPositions[i];
-      if (norm < viewStart || norm > viewEnd) continue;
-      const x = ((norm - viewStart) / viewRange) * width;
-      // Dim markers outside loop region
-      const outsideLoop = hasLoop && (norm < loopIn - 0.001 || norm > loopOut + 0.001);
-      const alpha = outsideLoop ? '40' : 'cc';
-      ctx.strokeStyle = `#f59e0b${alpha}`;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 3]);
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
-      ctx.setLineDash([]);
-      // Handle triangle
-      ctx.fillStyle = `#f59e0b${alpha}`;
-      ctx.beginPath();
-      ctx.moveTo(x - 5, 0); ctx.lineTo(x + 5, 0); ctx.lineTo(x, 8);
-      ctx.closePath();
-      ctx.fill();
-      // Number label
-      ctx.font = '8px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(`${i + 1}`, x, height - 3);
-    }
-
-    // ── Ghost hit markers (tiled repetitions) ──
-    if (hasLoop && regionSize > 0.01) {
-      const loopHits = hitPositions.filter((h: number) => h >= loopIn - 0.001 && h <= loopOut + 0.001);
-      const maxTiles = Math.min(20, Math.ceil(1 / regionSize) + 1);
-      for (let t = -maxTiles; t <= maxTiles; t++) {
-        if (t === 0) continue;
-        const offset = t * regionSize;
-        for (const hp of loopHits) {
-          const ghostNorm = hp + offset;
-          if (ghostNorm < 0 || ghostNorm > 1) continue;
-          if (ghostNorm < viewStart || ghostNorm > viewEnd) continue;
-          const x = ((ghostNorm - viewStart) / viewRange) * width;
-          ctx.strokeStyle = 'rgba(245, 158, 11, 0.18)';
-          ctx.lineWidth = 1;
-          ctx.setLineDash([2, 4]);
-          ctx.beginPath(); ctx.moveTo(x, HANDLE_ZONE_HEIGHT); ctx.lineTo(x, height); ctx.stroke();
-          ctx.setLineDash([]);
-          // Small ghost triangle
-          ctx.fillStyle = 'rgba(245, 158, 11, 0.18)';
-          ctx.beginPath();
-          ctx.moveTo(x - 3, HANDLE_ZONE_HEIGHT); ctx.lineTo(x + 3, HANDLE_ZONE_HEIGHT); ctx.lineTo(x, HANDLE_ZONE_HEIGHT + 5);
-          ctx.closePath();
-          ctx.fill();
-        }
-      }
-    }
-
-    // ── Cursor position (paste target) ──
-    const cursorPos = editor.cursorPosition;
-    if (cursorPos != null && cursorPos >= viewStart && cursorPos <= viewEnd) {
-      const cx = ((cursorPos - viewStart) / viewRange) * width;
-      ctx.strokeStyle = '#a78bfa';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([2, 2]);
-      ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, height); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#a78bfa';
-      ctx.beginPath();
-      ctx.moveTo(cx, mid - 5); ctx.lineTo(cx + 4, mid); ctx.lineTo(cx, mid + 5); ctx.lineTo(cx - 4, mid);
-      ctx.closePath();
-      ctx.fill();
-    }
-
     // ── Playhead ──
     if (isPlaying) {
       const playNorm = instrumentProgress;
@@ -445,15 +266,15 @@ export function LooperEditor() {
         // Playhead glow
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
         ctx.lineWidth = 5;
-        ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, height); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(px, waveTop); ctx.lineTo(px, height); ctx.stroke();
         // Playhead line
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, height); ctx.stroke();
-        // Playhead triangle at top
+        ctx.beginPath(); ctx.moveTo(px, waveTop); ctx.lineTo(px, height); ctx.stroke();
+        // Playhead triangle at top of waveform area
         ctx.fillStyle = '#ffffff';
         ctx.beginPath();
-        ctx.moveTo(px - 4, 0); ctx.lineTo(px + 4, 0); ctx.lineTo(px, 6);
+        ctx.moveTo(px - 4, waveTop); ctx.lineTo(px + 4, waveTop); ctx.lineTo(px, waveTop + 6);
         ctx.closePath();
         ctx.fill();
       }
@@ -510,7 +331,7 @@ export function LooperEditor() {
     return () => cancelAnimationFrame(rafRef.current);
   }, [isPlaying, draw]);
 
-  // ── Mouse down: markers only from handle zone, otherwise start selection ──
+  // ── Mouse down: loop handle dragging only ──
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (!selectedId || !instrument || !editor) return;
     const rect = containerRef.current?.getBoundingClientRect();
@@ -524,55 +345,50 @@ export function LooperEditor() {
     const loopOut = editor.loopOut ?? 1;
     const hasLoop = loopIn > 0 || loopOut < 1;
 
-    // Only drag markers/loop handles from the triangle handle zone (top ~14px)
-    if (inHandleZone) {
-      // Check loop in/out markers
-      if (hasLoop) {
-        const inX = ((loopIn - viewStart) / viewRange) * rect.width;
-        const outX = ((loopOut - viewStart) / viewRange) * rect.width;
-        if (Math.abs(clickX - inX) < 10) {
-          dragRef.current = { type: 'loopIn', startNorm: norm };
-          return;
-        }
-        if (Math.abs(clickX - outX) < 10) {
-          dragRef.current = { type: 'loopOut', startNorm: norm };
-          return;
-        }
-      }
-
-      // Check hit position markers
-      const hitPositions = instrument.hitPositions;
-      for (let i = 0; i < hitPositions.length; i++) {
-        const markerX = ((hitPositions[i] - viewStart) / viewRange) * rect.width;
-        if (Math.abs(clickX - markerX) < 8) {
-          dragRef.current = { type: 'marker', startNorm: norm, markerIdx: i };
-          return;
-        }
-      }
-    }
-
-    // Start selection — snap to nearest marker if click is close
-    let startNorm = norm;
-    const snapPositions = instrument.hitPositions;
-    for (const hp of snapPositions) {
-      const markerX = ((hp - viewStart) / viewRange) * rect.width;
-      if (Math.abs(clickX - markerX) < 6) {
-        startNorm = hp;
-        break;
-      }
-    }
-    // Also snap to loop in/out if close
-    if (hasLoop) {
+    // Only drag loop handles from the triangle handle zone (top ~14px)
+    if (inHandleZone && hasLoop) {
       const inX = ((loopIn - viewStart) / viewRange) * rect.width;
       const outX = ((loopOut - viewStart) / viewRange) * rect.width;
-      if (Math.abs(clickX - inX) < 6) startNorm = loopIn;
-      else if (Math.abs(clickX - outX) < 6) startNorm = loopOut;
+      if (Math.abs(clickX - inX) < 10) {
+        dragRef.current = { type: 'loopIn', startNorm: norm };
+        setCursorStyle('grabbing');
+        return;
+      }
+      if (Math.abs(clickX - outX) < 10) {
+        dragRef.current = { type: 'loopOut', startNorm: norm };
+        setCursorStyle('grabbing');
+        return;
+      }
     }
+  }, [selectedId, instrument, editor, xToNorm, viewStart, viewRange]);
 
-    dragRef.current = { type: 'select', startNorm };
-    setLooperSelection(selectedId, startNorm, startNorm);
-    setLooperCursor(selectedId, null);
-  }, [selectedId, instrument, editor, xToNorm, viewStart, viewRange, setLooperSelection, setLooperCursor]);
+  // ── Canvas mouse move: update cursor based on hover target ──
+  const handleCanvasMouseMove = useCallback((e: React.MouseEvent) => {
+    // During drag, show grabbing cursor for loop handles
+    if (dragRef.current) {
+      setCursorStyle('grabbing');
+      return;
+    }
+    if (!editor || !instrument) { setCursorStyle('crosshair'); return; }
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    const inHandleZone = mouseY < HANDLE_ZONE_HEIGHT;
+    const loopIn = editor.loopIn ?? 0;
+    const loopOut = editor.loopOut ?? 1;
+    const hasLoop = loopIn > 0 || loopOut < 1;
+
+    if (inHandleZone && hasLoop) {
+      const inX = ((loopIn - viewStart) / viewRange) * rect.width;
+      const outX = ((loopOut - viewStart) / viewRange) * rect.width;
+      if (Math.abs(mouseX - inX) < 10 || Math.abs(mouseX - outX) < 10) {
+        setCursorStyle('grab');
+        return;
+      }
+    }
+    setCursorStyle('crosshair');
+  }, [editor, instrument, viewStart, viewRange]);
 
   // ── Global mouse move/up ──
   useEffect(() => {
@@ -582,11 +398,7 @@ export function LooperEditor() {
       if (!dragRef.current || !selectedId) return;
       const norm = xToNorm(e.clientX);
 
-      if (dragRef.current.type === 'select') {
-        setLooperSelection(selectedId, dragRef.current.startNorm, norm);
-      } else if (dragRef.current.type === 'marker' && dragRef.current.markerIdx != null) {
-        setHitPosition(selectedId, dragRef.current.markerIdx, norm);
-      } else if (dragRef.current.type === 'loopIn') {
+      if (dragRef.current.type === 'loopIn') {
         const editor = useStore.getState().looperEditors[selectedId];
         const loopOut = editor?.loopOut ?? 1;
         setLooperLoop(selectedId, Math.min(norm, loopOut - 0.005), loopOut);
@@ -597,20 +409,7 @@ export function LooperEditor() {
       }
     };
     const handleUp = () => {
-      if (dragRef.current?.type === 'select' && selectedId) {
-        const editor = useStore.getState().looperEditors[selectedId];
-        if (editor?.selectionStart != null && editor?.selectionEnd != null) {
-          const s = Math.min(editor.selectionStart, editor.selectionEnd);
-          const e = Math.max(editor.selectionStart, editor.selectionEnd);
-          if (e - s < 0.002) {
-            // Click without drag = set cursor position (for paste target)
-            setLooperSelection(selectedId, null, null);
-            setLooperCursor(selectedId, s);
-          } else {
-            setLooperSelection(selectedId, s, e);
-          }
-        }
-      }
+      setCursorStyle('crosshair');
       dragRef.current = null;
     };
     window.addEventListener('mousemove', handleMove);
@@ -619,7 +418,7 @@ export function LooperEditor() {
       window.removeEventListener('mousemove', handleMove);
       window.removeEventListener('mouseup', handleUp);
     };
-  }, [selectedId, xToNorm, setLooperSelection, setLooperCursor, setHitPosition]);
+  }, [selectedId, xToNorm]);
 
   // ── Mouse wheel: zoom (native listener to allow preventDefault on non-passive) ──
   useEffect(() => {
@@ -650,47 +449,45 @@ export function LooperEditor() {
     return () => el.removeEventListener('wheel', onWheel);
   }, [selectedId, xToNorm, viewStart, viewEnd, setLooperZoom]);
 
-  // ── Keyboard shortcuts ──
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (!selectedId) return;
-    if (e.ctrlKey || e.metaKey) {
-      switch (e.key) {
-        case 'x': e.preventDefault(); looperCut(selectedId); break;
-        case 'c': e.preventDefault(); looperCopy(selectedId); break;
-        case 'v': e.preventDefault(); looperPaste(selectedId); break;
-        case 'z': e.preventDefault(); looperUndo(selectedId); break;
-      }
-    } else if (e.key === 'Delete' || e.key === 'Backspace') {
-      e.preventDefault();
-      if (e.shiftKey) {
-        looperSilence(selectedId);
-      } else {
-        looperDelete(selectedId);
-      }
-    }
-  }, [selectedId, looperCut, looperCopy, looperPaste, looperDelete, looperSilence, looperUndo]);
-
   if (!instrument || instrument.type !== 'looper' || !selectedId) return null;
 
+  const lp = { ...DEFAULT_LOOPER_PARAMS, ...instrument?.looperParams };
+
   return (
-    <div
-      className="flex-1 flex flex-col bg-bg min-w-0 h-full outline-none"
-      tabIndex={0}
-      onKeyDown={handleKeyDown}
-    >
+    <div className="flex-1 flex flex-col bg-bg min-w-0 h-full outline-none">
       <LooperToolbar
         instrumentId={selectedId}
         color={color}
-        sensitivity={sensitivity}
-        onSensitivityChange={setSensitivity}
       />
       <div ref={containerRef} className="flex-1 relative min-h-0">
         <canvas
           ref={canvasRef}
           className="w-full h-full"
-          style={{ cursor: dragRef.current?.type === 'marker' ? 'ew-resize' : 'crosshair' }}
+          style={{ cursor: cursorStyle }}
           onMouseDown={handleMouseDown}
+          onMouseMove={handleCanvasMouseMove}
         />
+      </div>
+      {/* Knob bar */}
+      <div className="flex items-center justify-around px-4 py-2 border-t border-border/50 shrink-0 bg-bg-secondary">
+        <Knob label="Loop Steps" value={instrument.loopSize} min={1} max={64} step={1} decimals={0} color={color} size={52}
+          onChange={(v) => setLoopSize(selectedId, v)} />
+        <Knob label="Vol" value={lp.gain} min={0} max={1} decimals={2} color={color} size={36}
+          onChange={(v) => updateLooperParams(selectedId, { gain: v })} />
+        <Knob label="Pitch" value={lp.pitchSemitones} min={-24} max={24} step={1} decimals={0} unit="st" color={color} size={36}
+          onChange={(v) => updateLooperParams(selectedId, { pitchSemitones: v })} />
+        <Knob label="A" value={lp.attack} min={0} max={2} decimals={3} unit="s" color={color} size={36}
+          onChange={(v) => updateLooperParams(selectedId, { attack: v })} />
+        <Knob label="R" value={lp.release} min={0} max={2} decimals={3} unit="s" color={color} size={36}
+          onChange={(v) => updateLooperParams(selectedId, { release: v })} />
+        <Knob label="Pan" value={lp.pan} min={-1} max={1} decimals={2} color={color} size={36}
+          onChange={(v) => updateLooperParams(selectedId, { pan: v })} />
+        <Knob label="Cutoff" value={lp.cutoff} min={20} max={20000} step={10} decimals={0} unit="Hz" color={color} size={36}
+          onChange={(v) => updateLooperParams(selectedId, { cutoff: v })} />
+        <Knob label="Res" value={lp.resonance} min={0} max={50} decimals={1} color={color} size={36}
+          onChange={(v) => updateLooperParams(selectedId, { resonance: v })} />
+        <Knob label="Phase" value={lp.startOffset} min={0} max={1} decimals={2} color={color} size={36}
+          onChange={(v) => updateLooperParams(selectedId, { startOffset: v })} />
       </div>
     </div>
   );

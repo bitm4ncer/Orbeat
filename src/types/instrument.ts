@@ -22,5 +22,6 @@ export interface Instrument {
   samplerParams?: SuperdoughSamplerParams;
   looperParams?: LooperParams;
   detectedBpm?: number;       // BPM detected from audio, 0 = unknown
+  detectedLoopSize?: number;  // natural step count from BPM detection (for display scaling)
   bpmMultiplier?: number;     // 0.5 | 1 | 2 (half-time / normal / double-time)
 }
