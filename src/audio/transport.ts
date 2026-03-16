@@ -56,7 +56,6 @@ let _liveBarCount = 0;
 const _pos = {
   progress: 0,
   currentStep: 0,
-  instProgress: {} as Record<string, number>,
   trackPosition: -1,
   trackStepProgress: 0,
   dirty: false,
@@ -78,13 +77,19 @@ function startUISync(): void {
       const secondsPerStep = 60 / state.bpm / stepsPerBeat;
       const totalSteps = transport.seconds / secondsPerStep;
 
-      const instProgress: Record<string, number> = {};
+      // Reuse _instProgress buffer — only spread when values actually change
+      let progressChanged = false;
       for (const inst of state.instruments) {
-        instProgress[inst.id] = (totalSteps % inst.loopSize) / inst.loopSize;
+        const p = (totalSteps % inst.loopSize) / inst.loopSize;
+        if (_instProgress[inst.id] !== p) {
+          _instProgress[inst.id] = p;
+          progressChanged = true;
+        }
       }
 
       useStore.getState().setPlaybackUI(
-        _pos.progress, _pos.currentStep, instProgress,
+        _pos.progress, _pos.currentStep,
+        progressChanged ? { ..._instProgress } : state.instrumentProgress,
         _pos.trackPosition, _pos.trackStepProgress,
       );
     }
@@ -263,10 +268,20 @@ let _tickCount = 0;
 
 function tick(time: number): void {
   try {
-    const t0 = log.isEnabled ? performance.now() : 0;
+    const t0 = performance.now();
     _tick(time);
+    const dur = performance.now() - t0;
+
+    // Always warn on slow ticks — these cause "schedule in the past" errors
+    if (dur > 5) {
+      console.warn(
+        `%c[transport] ⚠ Slow tick: ${dur.toFixed(1)}ms (step ${_globalStep}, loop boundary: ${_globalStep % _maxLoopSize === 0})`,
+        'color: #f59e0b',
+      );
+    }
+
     if (log.isEnabled && ++_tickCount % 100 === 0) {
-      log.perf('transport', 'tick (avg over 100)', performance.now() - t0, { globalStep: _globalStep, maxLoopSize: _maxLoopSize });
+      log.perf('transport', 'tick (avg over 100)', dur, { globalStep: _globalStep, maxLoopSize: _maxLoopSize });
     }
   } catch (e) {
     console.warn('[transport] tick error:', e);
@@ -363,8 +378,9 @@ function _tick(time: number): void {
     }
   }
 
-  // Reuse pre-allocated instProgress — clear old keys, then fill.
-  for (const k in _instProgress) delete _instProgress[k];
+  // _instProgress is overwritten per-instrument below (line 443) —
+  // no need to clear; stale keys from deleted instruments are harmless
+  // since startUISync recomputes from the current instrument list.
 
   // Scene membership: cache active-scene instrument sets for Track Mode or Live Mode
   let activeSceneInstIds: Set<string> | null = null;
@@ -570,8 +586,9 @@ function _tick(time: number): void {
   }
 
   // Write position to buffer — the rAF loop will flush to Zustand at ~60 fps.
+  // Note: instProgress is NOT written here — startUISync recomputes it from
+  // transport.seconds at RAF-time for smoother interpolation.
   _pos.progress = progress;
   _pos.currentStep = currentStep;
-  _pos.instProgress = { ..._instProgress };
   _pos.dirty = true;
 }

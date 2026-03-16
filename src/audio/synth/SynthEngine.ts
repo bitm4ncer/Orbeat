@@ -27,9 +27,11 @@ import { BitCrusher } from './nodes/BitCrusher';
 import { LadderFilter } from './nodes/LadderFilter';
 import { CombFilter } from './nodes/CombFilter';
 import { KarplusStrong } from './nodes/KarplusStrong';
+import { FMVoice } from './FMVoice';
+import { FM_ALGORITHMS } from './fmAlgorithms';
 import { SYNTH_PRESETS } from './presets';
 import type { SynthParams } from './types';
-import { DEFAULT_LFO_SLOT } from './types';
+import { DEFAULT_LFO_SLOT, DEFAULT_FM_PARAMS } from './types';
 import { isNativeType, getPeriodicWave } from './wavetables';
 import { getInterpolatedPeriodicWave } from './wavetableEngine';
 import { ModulationEngine } from './ModulationEngine';
@@ -38,6 +40,8 @@ import { midiNoteToFreq } from '../../utils/music';
 /** Fill in missing fields for backward-compatible preset loading. */
 function ensureDefaults(p: Partial<SynthParams>): SynthParams {
   if (p.wtPosition === undefined) p.wtPosition = 0;
+  if (p.wtWarpMode === undefined) p.wtWarpMode = 0;
+  if (p.wtWarpAmount === undefined) p.wtWarpAmount = 0;
   if (p.distortionType === undefined) p.distortionType = 0;
   if (p.unisonDrift === undefined) p.unisonDrift = 0;
   if (p.portamentoCurve === undefined) p.portamentoCurve = 'exp';
@@ -49,13 +53,14 @@ function ensureDefaults(p: Partial<SynthParams>): SynthParams {
   if (!p.lfos) {
     p.lfos = [
       { ...DEFAULT_LFO_SLOT, rate: p.lfo1Rate ?? 4, shape: (p.lfo1Shape as OscillatorType) ?? 'sine' },
-      { ...DEFAULT_LFO_SLOT, rate: p.lfo2Rate ?? 0.5, shape: (p.lfo2Shape as OscillatorType) ?? 'sine' },
-      { ...DEFAULT_LFO_SLOT },
-      { ...DEFAULT_LFO_SLOT },
+      { ...DEFAULT_LFO_SLOT, enabled: false, rate: p.lfo2Rate ?? 0.5, shape: (p.lfo2Shape as OscillatorType) ?? 'sine' },
+      { ...DEFAULT_LFO_SLOT, enabled: false },
+      { ...DEFAULT_LFO_SLOT, enabled: false },
     ];
   }
   // Ensure LFO slots have new fields
   for (const lfo of p.lfos) {
+    if (lfo.enabled === undefined) (lfo as Record<string, unknown>).enabled = true;
     if (lfo.mode === undefined) (lfo as Record<string, unknown>).mode = 'lfo';
     if (!lfo.steps) (lfo as Record<string, unknown>).steps = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   }
@@ -71,6 +76,8 @@ function ensureDefaults(p: Partial<SynthParams>): SynthParams {
       p.modAssignments.push({ id: 'legacy_lfo2', source: 'lfo2', target: target as keyof SynthParams, depth: (p.lfo2Depth ?? 0) / 1000 });
     }
   }
+  if (!p.synthMode) p.synthMode = 'osc';
+  if (!p.fm) p.fm = { ...DEFAULT_FM_PARAMS, operators: [...DEFAULT_FM_PARAMS.operators.map(o => ({ ...o }))] as [typeof DEFAULT_FM_PARAMS.operators[0], typeof DEFAULT_FM_PARAMS.operators[0], typeof DEFAULT_FM_PARAMS.operators[0], typeof DEFAULT_FM_PARAMS.operators[0]] };
   return p as SynthParams;
 }
 
@@ -90,8 +97,9 @@ class PolyVoice {
   sub1Gain: GainNode;
   sub2Osc: OscillatorNode;
   sub2Gain: GainNode;
-  fmOsc: OscillatorNode;         // FM modulator
-  fmGain: GainNode;              // FM depth → carrier.frequency
+  fmOsc: OscillatorNode;         // FM modulator (legacy simple FM)
+  fmGain: GainNode;              // FM depth → carrier.frequency (legacy)
+  fmVoice: FMVoice;              // 4-operator FM voice
   voiceGain: GainNode;           // ADSR envelope
   // Ring modulation: sub1 × main
   ringModGain: GainNode;         // main osc passes through; sub1 connects to .gain
@@ -182,6 +190,10 @@ class PolyVoice {
     for (const osc of this.mainOscs) {
       this.fmGain.connect(osc.frequency);
     }
+
+    // 4-operator FM voice — output goes through voiceGain (shared ADSR + filter chain)
+    this.fmVoice = new FMVoice(ac);
+    this.fmVoice.getOutput().connect(this.voiceGain);
   }
 
   /** Enable/disable ring modulation (sub1 × main oscillators) */
@@ -235,6 +247,7 @@ class PolyVoice {
     try { this.fmOsc.stop(); } catch { /* already stopped */ }
     try { this.fmOsc.disconnect(); } catch { /* ignore */ }
     try { this.fmGain.disconnect(); } catch { /* ignore */ }
+    this.fmVoice.dispose();
     try { this.voiceGain.disconnect(); } catch { /* ignore */ }
   }
 
@@ -248,10 +261,10 @@ class PolyVoice {
     skipGlide = false,
   ): void {
     const now = Math.max(audioTime, this.ac.currentTime + 0.001);
-    const attack = Math.max(p.gainAttack, 0.001);
-    const decay = Math.max(p.gainDecay, 0.001);
-    const sustain = Math.max(0, Math.min(1, p.gainSustain));
-    const release = Math.max(p.gainRelease, 0.02);
+    const attack = Math.max(Number.isFinite(p.gainAttack) ? p.gainAttack : 0.001, 0.001);
+    const decay = Math.max(Number.isFinite(p.gainDecay) ? p.gainDecay : 0.1, 0.001);
+    const sustain = Math.max(0, Math.min(1, Number.isFinite(p.gainSustain) ? p.gainSustain : 0.7));
+    const release = Math.max(Number.isFinite(p.gainRelease) ? p.gainRelease : 0.15, 0.02);
     const attackEnd = now + attack;
     const releaseStart = Math.max(now + duration, attackEnd + 0.001);
     this.triggeredAt = audioTime;
@@ -259,7 +272,8 @@ class PolyVoice {
     this.currentMidiNote = midiNote; // track which note this voice is playing
 
     // Schedule ADSR (gainScale allows per-note volume from instrument dB)
-    const peak = p.masterVolume * Math.max(0, gainScale);
+    const mv = Number.isFinite(p.masterVolume) ? p.masterVolume : 0.75;
+    const peak = mv * Math.max(0, gainScale);
     const g = this.voiceGain.gain;
     g.cancelScheduledValues(now);
     g.setValueAtTime(0, now);
@@ -267,8 +281,21 @@ class PolyVoice {
     g.setTargetAtTime(sustain * peak, attackEnd, decay / 5);
     g.setTargetAtTime(0, releaseStart, release / 5);
 
-    // Set frequencies with portamento
-    this.setFrequencies(midiNote, p, now, skipGlide);
+    // Set frequencies with portamento (or trigger FM voice)
+    if (p.synthMode === 'fm' && p.fm?.enabled) {
+      // FM mode: mute subtractive oscillators, trigger FM operators
+      for (let i = 0; i < MAX_UNISON; i++) {
+        this.mainGains[i].gain.setValueAtTime(0, now);
+      }
+      this.sub1Gain.gain.setValueAtTime(0, now);
+      this.sub2Gain.gain.setValueAtTime(0, now);
+      this.fmGain.gain.setValueAtTime(0, now);
+      this.fmVoice.trigger(midiNote, now, duration, p.fm);
+    } else {
+      // OSC mode: mute FM voice, use subtractive oscillators
+      this.fmVoice.silence(now);
+      this.setFrequencies(midiNote, p, now, skipGlide);
+    }
 
     // Filter envelope
     this.triggerFilterEnv(p, now, attackEnd);
@@ -304,7 +331,7 @@ class PolyVoice {
 
         if (p.vcoType.startsWith('wt:')) {
           const bankId = p.vcoType.slice(3);
-          const wave = getInterpolatedPeriodicWave(this.ac, bankId, p.wtPosition ?? 0);
+          const wave = getInterpolatedPeriodicWave(this.ac, bankId, p.wtPosition ?? 0, p.wtWarpMode ?? 0, p.wtWarpAmount ?? 0);
           if (wave) this.mainOscs[i].setPeriodicWave(wave);
         } else if (isNativeType(p.vcoType)) {
           this.mainOscs[i].type = p.vcoType;
@@ -374,6 +401,7 @@ class PolyVoice {
   silence(when: number): void {
     this.voiceGain.gain.cancelScheduledValues(when);
     this.voiceGain.gain.setTargetAtTime(0, when, 0.01);
+    this.fmVoice.silence(when);
     this.releaseEnd = when + 0.05;
     this.currentMidiNote = null; // clear note tracking on silence
   }
@@ -651,6 +679,8 @@ export class SynthEngine {
   // ─── Params ───────────────────────────────────────────────────────────────
 
   setParam<K extends keyof SynthParams>(key: K, value: SynthParams[K]): void {
+    // Guard: reject non-finite numeric values to prevent Web Audio API crashes
+    if (typeof value === 'number' && !Number.isFinite(value)) return;
     (this.params as unknown as Record<string, unknown>)[key] = value;
     this.applyParam(key, value);
   }
@@ -730,8 +760,10 @@ export class SynthEngine {
       case 'lfo2Rate': case 'lfo2Depth': case 'lfo2Shape': case 'lfo2Dest':
         break;
 
-      // Wavetable position: live-update playing voices
+      // Wavetable params: live-update playing voices
       case 'wtPosition':
+      case 'wtWarpMode':
+      case 'wtWarpAmount':
         this.updatePlayingVoicesWaveform();
         break;
       case 'vcoType':
@@ -773,6 +805,21 @@ export class SynthEngine {
       case 'unisonDrift':
         for (const voice of this.voices) voice.setDrift(v);
         break;
+
+      // FM 4-op params
+      case 'synthMode':
+      case 'fm': {
+        // When algorithm changes, rewire all voices
+        const fm = this.params.fm;
+        if (fm) {
+          const algo = FM_ALGORITHMS[fm.algorithm] ?? FM_ALGORITHMS[0];
+          for (const voice of this.voices) {
+            voice.fmVoice.applyAlgorithm(algo);
+          }
+        }
+        // synthMode and fm operator changes take effect on next noteOn
+        break;
+      }
     }
   }
 
@@ -786,7 +833,7 @@ export class SynthEngine {
     this._lastWTUpdate = now;
 
     const bankId = this.params.vcoType.slice(3);
-    const wave = getInterpolatedPeriodicWave(this.ac, bankId, this.params.wtPosition ?? 0);
+    const wave = getInterpolatedPeriodicWave(this.ac, bankId, this.params.wtPosition ?? 0, this.params.wtWarpMode ?? 0, this.params.wtWarpAmount ?? 0);
     if (!wave) return;
 
     const acNow = this.ac.currentTime;
@@ -808,6 +855,11 @@ export class SynthEngine {
 
   getParams(): SynthParams {
     return { ...this.params };
+  }
+
+  /** Get the current modulated value for a parameter (base + LFO), or null if unmodulated. */
+  getModulatedValue(target: keyof SynthParams): number | null {
+    return this.modEngine.getModulatedValue(target);
   }
 
   loadPreset(preset: SynthParams): void {

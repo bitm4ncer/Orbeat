@@ -85,8 +85,16 @@ export function GridSequencer() {
   const gridLengths = useStore((s) => s.gridLengths);
   const gridVelocities = useStore((s) => s.gridVelocities);
   const octaveOffset = useStore((s) => s.octaveOffset);
-  const instrumentProgress = useStore((s) => s.instrumentProgress);
   const isPlaying = useStore((s) => s.isPlaying);
+  // Derive activeStep directly — only re-renders when the step number changes,
+  // not on every RAF frame like subscribing to instrumentProgress would.
+  const activeStep = useStore((s) => {
+    if (!s.isPlaying || !selectedId) return -1;
+    const inst = s.instruments.find((i) => i.id === selectedId);
+    if (!inst) return -1;
+    const prog = s.instrumentProgress[selectedId] ?? 0;
+    return Math.floor(prog * inst.loopSize) % inst.loopSize;
+  });
   const snapEnabled = useStore((s) => s.snapEnabled);
   const gridResolution = useStore((s) => s.gridResolution);
   const scaleRoot = useStore((s) => s.scaleRoot);
@@ -405,11 +413,8 @@ export function GridSequencer() {
   const isChromatic = scaleType === 'chromatic';
   const rows = isChromatic ? allRows : allRows.filter((n) => isNoteInScale(n, scaleRoot, scaleType));
 
-  // Active step for playback indicator
-  const activeStep = isPlaying ? (() => {
-    const instProg = instrumentProgress[instrument.id] ?? 0;
-    return Math.floor(instProg * loopSize) % loopSize;
-  })() : -1;
+  // activeStep is derived from the store selector above — only re-renders
+  // when the integer step changes, not on every progress float update.
 
   // Build step → hitIndex map
   const stepToHit = new Map<number, number>();
@@ -1192,10 +1197,19 @@ export function GridSequencer() {
                   ? isPlaying
                     ? 'bg-red-500 border-red-400 animate-pulse shadow-[0_0_6px_rgba(239,68,68,0.5)]'
                     : 'bg-red-500/60 border-red-400/60'
-                  : 'bg-transparent border-text-secondary/30 hover:border-red-400/50'
+                  : 'bg-transparent border-red-500/50 hover:bg-red-500/40 hover:border-red-400'
               }`}
               title={midiRecordArmed ? 'Disarm MIDI record' : 'Arm MIDI record'}
             />
+            <button
+              onClick={() => useStore.getState().selectInstrument(null)}
+              className="ml-1.5 w-3.5 h-3.5 flex items-center justify-center text-text-secondary/50 hover:text-text-primary transition-colors"
+              title="Collapse panel"
+            >
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                <polyline points="2,4 5,7 8,4" />
+              </svg>
+            </button>
           </div>
         </div>
 
@@ -1312,10 +1326,19 @@ export function GridSequencer() {
                 ? isPlaying
                   ? 'bg-red-500 border-red-400 animate-pulse shadow-[0_0_6px_rgba(239,68,68,0.5)]'
                   : 'bg-red-500/60 border-red-400/60'
-                : 'bg-transparent border-text-secondary/30 hover:border-red-400/50'
+                : 'bg-transparent border-red-500/50 hover:bg-red-500/40 hover:border-red-400'
             }`}
             title={midiRecordArmed ? 'Disarm MIDI record' : 'Arm MIDI record'}
           />
+          <button
+            onClick={() => useStore.getState().selectInstrument(null)}
+            className="ml-1.5 w-3.5 h-3.5 flex items-center justify-center text-text-secondary/50 hover:text-text-primary transition-colors"
+            title="Collapse panel"
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <polyline points="2,4 5,7 8,4" />
+            </svg>
+          </button>
           {octaveButtons}
           {isSynth && (
             (synthPanelCollapsed && synthPanelMode === 'inline') ||

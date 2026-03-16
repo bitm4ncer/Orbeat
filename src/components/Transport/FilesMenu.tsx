@@ -6,6 +6,7 @@ import { storage } from '../../storage/LocalStorageProvider';
 import { serializeSet, exportSetToFile, importSetFromFile } from '../../storage/serializer';
 import { gzipAsync, toBase64Url, strToU8 } from '../../storage/compressionUtils';
 import { setLastSetId } from '../../storage/sessionAutosave';
+import { encodeSetToUrl, buildShareUrl, exportSamplesZip, importSamplesZip } from '../../storage/urlShare';
 import type { OrbitrackSet, SetVersionEntry } from '../../types/storage';
 import { SaveSetDialog } from './SaveSetDialog';
 import { OpenSetDialog } from './OpenSetDialog';
@@ -27,6 +28,7 @@ export function FilesMenu({ anchorRef, onClose }: FilesMenuProps) {
   const [saveAs, setSaveAs] = useState(false);
   const [openDialogOpen, setOpenDialogOpen] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const thumbnail = useStore((s) => s.currentSetThumbnail);
   useClickOutside(ref, () => {
     if (!saveOpen && !openDialogOpen) onClose();
@@ -144,6 +146,10 @@ export function FilesMenu({ anchorRef, onClose }: FilesMenuProps) {
     setOpenDialogOpen(true);
   };
 
+  const handleShare = () => {
+    setShareOpen(true);
+  };
+
   const items = [
     { label: 'New Set', action: handleNew },
     'separator',
@@ -152,6 +158,8 @@ export function FilesMenu({ anchorRef, onClose }: FilesMenuProps) {
     'separator',
     { label: 'Export .orb…', action: handleExport },
     { label: 'Import .orb…', action: handleImport },
+    'separator',
+    { label: 'Share…', action: handleShare },
     'separator',
     { label: 'My Sets', action: handleOpen },
   ] as const;
@@ -224,6 +232,129 @@ export function FilesMenu({ anchorRef, onClose }: FilesMenuProps) {
           onClose={() => { setOpenDialogOpen(false); onClose(); }}
         />
       )}
+
+      {shareOpen && (
+        <SharePanel onClose={() => { setShareOpen(false); onClose(); }} />
+      )}
     </>
+  );
+}
+
+function SharePanel({ onClose }: { onClose: () => void }) {
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copying' | 'copied' | 'error'>('idle');
+  const [zipStatus, setZipStatus] = useState<'idle' | 'working' | 'done' | 'error'>('idle');
+  const [hasCustomSamples, setHasCustomSamples] = useState(false);
+  const importRef = useRef<HTMLInputElement>(null);
+
+  const handleCopyLink = async () => {
+    if (copyStatus === 'copying') return;
+    setCopyStatus('copying');
+    try {
+      const store = useStore.getState();
+      const state = store.getSerializableState();
+      const { encoded, hasCustomSamples: hcs } = await encodeSetToUrl(state, store.currentSetName, store.currentSetThumbnail ?? undefined);
+      setHasCustomSamples(hcs);
+      await navigator.clipboard.writeText(buildShareUrl(encoded));
+      setCopyStatus('copied');
+      setTimeout(() => setCopyStatus('idle'), 2500);
+    } catch (e) {
+      console.error('[Share] Copy failed:', e);
+      setCopyStatus('error');
+      setTimeout(() => setCopyStatus('idle'), 3000);
+    }
+  };
+
+  const handleDownloadSamples = async () => {
+    if (zipStatus === 'working') return;
+    setZipStatus('working');
+    try {
+      const { customSamples } = useStore.getState().getSerializableState();
+      const blob = await exportSamplesZip(customSamples);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${useStore.getState().currentSetName}-samples.zip`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      setZipStatus('done');
+      setTimeout(() => setZipStatus('idle'), 2000);
+    } catch (e) {
+      console.error('[Share] ZIP export failed:', e);
+      setZipStatus('error');
+      setTimeout(() => setZipStatus('idle'), 3000);
+    }
+  };
+
+  const handleImportSamples = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const samples = await importSamplesZip(file);
+      const store = useStore.getState();
+      for (const s of samples) {
+        store.addCustomSample(s);
+      }
+    } catch (err) {
+      console.error('[Share] ZIP import failed:', err);
+    }
+    e.target.value = '';
+  };
+
+  const copyLabel =
+    copyStatus === 'copying' ? 'Encoding...' : copyStatus === 'copied' ? 'Copied!' : copyStatus === 'error' ? 'Failed' : 'Copy link';
+
+  return createPortal(
+    <div className="fixed inset-0 z-[10001] flex items-center justify-center backdrop-blur-sm bg-black/40" onClick={onClose}>
+      <div className="bg-bg-secondary border border-border rounded-lg shadow-2xl py-4 px-5" style={{ width: 280 }} onClick={(e) => e.stopPropagation()}>
+        <div className="text-[11px] uppercase tracking-wider text-text-secondary/50 mb-3">Share Track</div>
+
+        <button
+          onClick={handleCopyLink}
+          disabled={copyStatus === 'copying'}
+          className={`w-full text-[12px] px-4 py-2 rounded font-medium transition-colors mb-2 cursor-pointer
+            ${
+              copyStatus === 'copied'
+                ? 'bg-green-500/20 text-green-400 border border-green-500/40'
+                : copyStatus === 'error'
+                  ? 'bg-red-500/20 text-red-400 border border-red-500/40'
+                  : 'border disabled:opacity-50'
+            }`}
+          style={
+            copyStatus !== 'copied' && copyStatus !== 'error'
+              ? { backgroundColor: '#c1eeca', color: '#1a1a1a', borderColor: '#a8dab0' }
+              : {}
+          }
+        >
+          {copyLabel}
+        </button>
+
+        {hasCustomSamples && copyStatus === 'copied' && (
+          <div className="mb-2 px-3 py-2 rounded bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-400/80">
+            Custom samples not in URL — download & share the samples ZIP too.
+          </div>
+        )}
+
+        <div className="border-t border-border/30 mt-2 pt-2 flex gap-2">
+          <button
+            onClick={handleDownloadSamples}
+            disabled={zipStatus === 'working'}
+            className="flex-1 text-[11px] px-3 py-1.5 rounded border border-border text-text-secondary hover:text-text-primary hover:border-white/30 transition-colors disabled:opacity-50"
+          >
+            {zipStatus === 'working' ? 'Packing...' : zipStatus === 'done' ? 'Downloaded!' : 'Download Samples'}
+          </button>
+          <button
+            onClick={() => importRef.current?.click()}
+            className="flex-1 text-[11px] px-3 py-1.5 rounded border border-border text-text-secondary hover:text-text-primary hover:border-white/30 transition-colors"
+          >
+            Import Samples
+          </button>
+          <input ref={importRef} type="file" accept=".zip" className="hidden" onChange={handleImportSamples} />
+        </div>
+
+        <div className="mt-2 text-[10px] text-text-secondary/40 leading-snug">
+          Factory sounds load by name. Share the ZIP for custom samples.
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }

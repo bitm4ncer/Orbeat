@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { getOrbitAnalyser } from '../../audio/orbitEffects';
+import { useAnimationLoop } from '../../hooks/useAnimationLoop';
 
 const CANVAS_H = 80;
 const MIN_FREQ = 20;
@@ -17,11 +18,21 @@ function freqToX(f: number, W: number): number {
   return (Math.log10(f / MIN_FREQ) / Math.log10(MAX_FREQ / MIN_FREQ)) * W;
 }
 
-function makeOffscreen(W: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
+/** Darken a hex color to ~10% brightness for use as background */
+function colorToBg(hex: string): string {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  const f = 0.08; // 8% of original brightness
+  return `rgb(${Math.round(r * f)},${Math.round(g * f)},${Math.round(b * f)})`;
+}
+
+function makeOffscreen(W: number, bg: string): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const c = document.createElement('canvas');
   c.width = W; c.height = CANVAS_H;
   const ctx = c.getContext('2d')!;
-  ctx.fillStyle = '#0e0e18';
+  ctx.fillStyle = bg;
   ctx.fillRect(0, 0, W, CANVAS_H);
   return [c, ctx];
 }
@@ -36,8 +47,6 @@ export function SynthVisualizer({ orbitIndex, color }: Props) {
   const canvasRef        = useRef<HTMLCanvasElement>(null);
   const containerRef     = useRef<HTMLDivElement>(null);
   const modeRef          = useRef<VisMode>(mode);
-  const rafRef           = useRef(0);
-  const frameRef         = useRef(0);
   const widthRef         = useRef(280);
   // Separate rolling buffers for spec and marq
   const specRef          = useRef<[HTMLCanvasElement, CanvasRenderingContext2D] | null>(null);
@@ -45,6 +54,8 @@ export function SynthVisualizer({ orbitIndex, color }: Props) {
   const marqPrevYRef     = useRef<number>(CANVAS_H / 2);
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
+
+  const bgColor = '#0d0d12';
 
   // Track container width via ResizeObserver
   useEffect(() => {
@@ -58,8 +69,8 @@ export function SynthVisualizer({ orbitIndex, color }: Props) {
       widthRef.current = W;
       canvas.width = W;
       canvas.height = CANVAS_H;
-      specRef.current = makeOffscreen(W);
-      marqRef.current = makeOffscreen(W);
+      specRef.current = makeOffscreen(W, bgColor);
+      marqRef.current = makeOffscreen(W, bgColor);
     };
 
     syncSize();
@@ -67,37 +78,46 @@ export function SynthVisualizer({ orbitIndex, color }: Props) {
     const ro = new ResizeObserver(() => syncSize());
     ro.observe(container);
     return () => ro.disconnect();
-  }, []);
+  }, [bgColor]);
+
+  // Cached canvas context
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    ctxRef.current = canvas.getContext('2d');
+  }, []);
 
-    const fftBuf  = new Uint8Array(1024);
-    const timeBuf = new Uint8Array(512);
+  // Pre-allocate buffers once
+  const fftBufRef = useRef(new Uint8Array(1024));
+  const timeBufRef = useRef(new Uint8Array(512));
 
-    const draw = () => {
-      rafRef.current = requestAnimationFrame(draw);
-      frameRef.current++;
-
+  const drawFrame = useCallback(({ frame }: { frame: number }) => {
       const W = widthRef.current;
       const curMode = modeRef.current;
+      const analyser = getOrbitAnalyser(orbitIndex);
+
+      // Skip frame entirely when no analyser — keeps last drawn frame visible
+      if (!analyser) return;
+
       // Spec and Marq run every frame; others throttle to ~30fps
       const isScroll = curMode === 'spec' || curMode === 'marq';
-      if (!isScroll && frameRef.current % 2 !== 0) return;
+      if (!isScroll && frame % 2 !== 0) return;
 
-      const ctx = canvas.getContext('2d');
+      const ctx = ctxRef.current;
       if (!ctx) return;
 
-      ctx.clearRect(0, 0, W, CANVAS_H);
-      ctx.fillStyle = '#0e0e18';
-      ctx.fillRect(0, 0, W, CANVAS_H);
+      const fftBuf = fftBufRef.current;
+      const timeBuf = timeBufRef.current;
+      const bg = bgColor;
 
-      const analyser = getOrbitAnalyser(orbitIndex);
+      ctx.clearRect(0, 0, W, CANVAS_H);
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, W, CANVAS_H);
 
       // ── Bands — 16 log-spaced pillars ──────────────────────────────────────
       if (curMode === 'bands') {
-        if (!analyser) return;
         const binCount = analyser.frequencyBinCount;
         analyser.getByteFrequencyData(fftBuf);
         const nyquist  = analyser.context.sampleRate / 2;
@@ -130,7 +150,6 @@ export function SynthVisualizer({ orbitIndex, color }: Props) {
 
       // ── Wave — static oscilloscope ──────────────────────────────────────────
       else if (curMode === 'wave') {
-        if (!analyser) return;
         analyser.getByteTimeDomainData(timeBuf);
         const bufLen = timeBuf.length;
 
@@ -156,7 +175,6 @@ export function SynthVisualizer({ orbitIndex, color }: Props) {
 
       // ── Line — smooth frequency spectrum stroke ─────────────────────────────
       else if (curMode === 'line') {
-        if (!analyser) return;
         const binCount = analyser.frequencyBinCount;
         analyser.getByteFrequencyData(fftBuf);
         const nyquist = analyser.context.sampleRate / 2;
@@ -188,7 +206,7 @@ export function SynthVisualizer({ orbitIndex, color }: Props) {
           analyser.getByteFrequencyData(fftBuf);
 
           const imgData = offCtx.getImageData(1, 0, W - 1, CANVAS_H);
-          offCtx.fillStyle = '#0e0e18';
+          offCtx.fillStyle = bg;
           offCtx.fillRect(0, 0, W, CANVAS_H);
           offCtx.putImageData(imgData, 0, 0);
 
@@ -223,7 +241,7 @@ export function SynthVisualizer({ orbitIndex, color }: Props) {
 
           // Shift left by MARQ_SPEED pixels
           const imgData = offCtx.getImageData(MARQ_SPEED, 0, W - MARQ_SPEED, CANVAS_H);
-          offCtx.fillStyle = '#0e0e18';
+          offCtx.fillStyle = bg;
           offCtx.fillRect(0, 0, W, CANVAS_H);
           offCtx.putImageData(imgData, 0, 0);
 
@@ -304,37 +322,75 @@ export function SynthVisualizer({ orbitIndex, color }: Props) {
         ctx.fill();
         ctx.restore();
       }
-    };
+  }, [orbitIndex, color, bgColor]);
 
-    rafRef.current = requestAnimationFrame(draw);
-    return () => { cancelAnimationFrame(rafRef.current); };
-  }, [orbitIndex, color]);
+  useAnimationLoop(drawFrame, {
+    targetFps: 60,
+    visibilityRef: containerRef,
+  });
+
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close menu on outside click
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [menuOpen]);
 
   return (
-    <div>
-      <div ref={containerRef} className="w-full" style={{ height: CANVAS_H }}>
+    <div className="relative w-full h-full">
+      <div ref={containerRef} className="w-full h-full">
         <canvas
           ref={canvasRef}
           height={CANVAS_H}
-          className="block"
-          style={{ imageRendering: 'pixelated' }}
+          className="block w-full h-full"
+          style={{ imageRendering: 'pixelated', background: bgColor }}
         />
       </div>
-      <div className="flex gap-0.5 px-3 py-1.5">
-        {MODES.map((m, i) => (
-          <button
-            key={m}
-            onClick={() => setMode(m)}
-            className="flex-1 text-[8px] uppercase tracking-wider py-0.5 rounded transition-all"
+      {/* Mode button — top right corner */}
+      <div ref={menuRef} className="absolute top-1 right-1">
+        <button
+          onClick={() => setMenuOpen(!menuOpen)}
+          className="text-[7px] uppercase tracking-wider px-1.5 py-0.5 rounded transition-all"
+          style={{
+            background: `${color}20`,
+            border: `1px solid ${color}40`,
+            color,
+          }}
+        >
+          {LABELS[MODES.indexOf(mode)]}
+        </button>
+        {menuOpen && (
+          <div
+            className="absolute top-full right-0 mt-0.5 flex flex-col rounded overflow-hidden"
             style={{
-              background: mode === m ? `${color}28` : 'transparent',
-              border:     `1px solid ${mode === m ? color : '#2a2a3a'}`,
-              color:      mode === m ? color : '#8888a0',
+              background: bgColor,
+              border: `1px solid ${color}40`,
+              zIndex: 50,
             }}
           >
-            {LABELS[i]}
-          </button>
-        ))}
+            {MODES.map((m, i) => (
+              <button
+                key={m}
+                onClick={() => { setMode(m); setMenuOpen(false); }}
+                className="text-[8px] uppercase tracking-wider px-3 py-1 text-left transition-all"
+                style={{
+                  background: mode === m ? `${color}28` : 'transparent',
+                  color: mode === m ? color : '#8888a0',
+                }}
+              >
+                {LABELS[i]}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

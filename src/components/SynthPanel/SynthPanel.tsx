@@ -1,4 +1,5 @@
-import { useState, useMemo, useReducer, useEffect, useRef } from 'react';
+import { useState, useMemo, useReducer, useEffect, useRef, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useStore } from '../../state/store';
 import { getSynthEngine } from '../../audio/synthManager';
 import type { SynthParams } from '../../audio/synth/types';
@@ -6,15 +7,23 @@ import { DEFAULT_LFO_SLOT } from '../../audio/synth/types';
 import { ALL_WAVE_SHAPES, ALL_WAVE_LABELS } from '../../audio/synth/wavetables';
 import { DISTORTION_TYPE_LABELS } from '../../audio/synth/nodes/Distortion';
 import { WAVETABLE_BANKS } from '../../audio/synth/wavetableBanks';
+import { WARP_MODE_NAMES } from '../../audio/synth/wavetableEngine';
 import { EffectKnob } from '../EffectsSidebar/EffectKnob';
 import type { KnobModulation, KnobContextItem } from '../EffectsSidebar/EffectKnob';
 import { FilterCurveDisplay } from '../EffectsSidebar/FilterCurveDisplay';
 import { EnvelopeDisplay } from './EnvelopeDisplay';
 import { OscDisplay } from './OscDisplay';
+import { StringDisplay } from './StringDisplay';
+import { WavetableDisplay3D } from './WavetableDisplay3D';
 import { SynthVisualizer } from './SynthVisualizer';
 import { PresetBrowser } from './PresetBrowser';
 import { LFOPanel } from './LFOPanel';
 import { ModulationProvider } from './ModulationContext';
+import { OscillatorSection } from './OscillatorSection';
+import { EnvelopeSection } from './EnvelopeSection';
+import { FilterSection } from './FilterSection';
+import { FXSection } from './FXSection';
+import { FMSection } from './FMSection';
 import { usePresetStore } from '../../state/presetStore';
 import { useMidiLearn } from '../../hooks/useMidiLearn';
 
@@ -96,6 +105,222 @@ const WAVE_TYPES: OscillatorType[] = ['sine', 'triangle', 'square', 'sawtooth'];
 const WAVE_LABELS = ['SIN', 'TRI', 'SQR', 'SAW'];
 const FILTER_TYPES: string[] = ['lowpass', 'highpass', 'bandpass', 'notch', 'ladder', 'comb+', 'comb-'];
 const FILTER_LABELS = ['LP', 'HP', 'BP', 'NT', 'LDR', 'CMB+', 'CMB-'];
+
+// ─── Inline envelope for floating OSC sections ─────────────────────────────
+
+const envDisplayStyle: React.CSSProperties = {
+  border: '1px solid rgba(255,255,255,0.04)',
+  borderRadius: 4,
+  boxShadow: 'inset 0 0 12px rgba(0,0,0,0.4)',
+  background: 'linear-gradient(180deg, rgba(0,0,0,0.2), transparent)',
+  overflow: 'hidden',
+};
+
+function InlineEnvelope({
+  label, attack, decay, sustain, release, color, onChange, modProps: mp,
+}: {
+  label: string;
+  attack: number; decay: number; sustain: number; release: number;
+  color: string;
+  onChange: (k: 'attack' | 'decay' | 'sustain' | 'release', v: number) => void;
+  modProps?: (key: string, label: string) => {
+    modulations: KnobModulation[];
+    contextItems: KnobContextItem[];
+    onLfoDrop: (lfoSource: string) => void;
+    onModDepthChange: (modIndex: number, newDepth: number) => void;
+  };
+}) {
+  const [expanded, setExpanded] = useState(true);
+  return (
+    <div style={{ borderTop: '1px solid rgba(255,255,255,0.03)', marginTop: 4, paddingTop: 6 }}>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2 mb-1 select-none"
+      >
+        <span className="text-[9px] font-medium uppercase" style={{ color, letterSpacing: '0.12em', opacity: 0.7 }}>{label}</span>
+        <span className="text-[7px]" style={{ color: '#8888a0' }}>{expanded ? '▼' : '▶'}</span>
+      </button>
+      {expanded && (
+        <div style={envDisplayStyle}>
+          <EnvelopeDisplay attack={attack} decay={decay} sustain={sustain} release={release} color={color} height={44} />
+        </div>
+      )}
+      {expanded && (
+        <div className="flex justify-around items-end gap-1 mt-1">
+          <EffectKnob label="Atk" value={attack} min={0} max={2} unit="s" defaultValue={0.001} color={color} size="sm" onChange={(v) => onChange('attack', v)} {...(mp?.('gainAttack', 'Atk') ?? {})} />
+          <EffectKnob label="Dec" value={decay} min={0.001} max={2} unit="s" defaultValue={0.1} color={color} size="sm" onChange={(v) => onChange('decay', v)} {...(mp?.('gainDecay', 'Dec') ?? {})} />
+          <EffectKnob label="Sus" value={sustain} min={0} max={1} defaultValue={0.7} color={color} size="sm" onChange={(v) => onChange('sustain', v)} {...(mp?.('gainSustain', 'Sus') ?? {})} />
+          <EffectKnob label="Rel" value={release} min={0.01} max={3} unit="s" defaultValue={0.15} color={color} size="sm" onChange={(v) => onChange('release', v)} {...(mp?.('gainRelease', 'Rel') ?? {})} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Floating layout (extracted to use useLayoutEffect for header portal) ────
+
+function FloatingLayout({
+  params, color, set, modProps, engine, instrument, currentPresetName,
+  updateEngineParams, forceUpdate, lfoContent,
+}: {
+  params: SynthParams;
+  color: string;
+  set: <K extends keyof SynthParams>(key: K, value: SynthParams[K]) => void;
+  modProps: (key: keyof SynthParams, label: string) => {
+    modulations: KnobModulation[];
+    contextItems: KnobContextItem[];
+    onLfoDrop: (lfoSource: string) => void;
+    onModDepthChange: (modIndex: number, newDepth: number) => void;
+  };
+  engine: { getParams: () => SynthParams; loadPreset: (p: SynthParams) => void; getModulatedValue: (target: keyof SynthParams) => number | null };
+  instrument: { id: string; orbitIndex: number };
+  currentPresetName: string;
+  updateEngineParams: (id: string, params: SynthParams) => void;
+  forceUpdate: () => void;
+  lfoContent: (compact?: boolean) => React.ReactNode;
+}) {
+  const [headerTarget, setHeaderTarget] = useState<HTMLElement | null>(null);
+  const [modeTarget, setModeTarget] = useState<HTMLElement | null>(null);
+  const [rightTarget, setRightTarget] = useState<HTMLElement | null>(null);
+  const [showFilter, setShowFilter] = useState(true);
+  const [showFx, setShowFx] = useState(true);
+  const [showLfo, setShowLfo] = useState(true);
+
+  useLayoutEffect(() => {
+    const el = document.getElementById('synth-float-header-center');
+    if (el) setHeaderTarget(el);
+    const modeEl = document.getElementById('synth-float-header-mode');
+    if (modeEl) setModeTarget(modeEl);
+    const rightEl = document.getElementById('synth-float-header-right');
+    if (rightEl) setRightTarget(rightEl);
+  }, []);
+
+  const envOnChange = (k: 'attack' | 'decay' | 'sustain' | 'release', v: number) => {
+    const map = { attack: 'gainAttack', decay: 'gainDecay', sustain: 'gainSustain', release: 'gainRelease' } as const;
+    set(map[k], v);
+  };
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+      {/* Portal PresetBrowser into FloatingPanel header */}
+      {headerTarget && createPortal(
+        <PresetBrowser
+          engine={engine as any} color={color} currentPresetName={currentPresetName}
+          onPresetLoaded={() => { updateEngineParams(instrument.id, engine.getParams()); forceUpdate(); }}
+        />,
+        headerTarget,
+      )}
+
+      {/* Portal OSC/FM mode toggle into FloatingPanel header */}
+      {modeTarget && createPortal(
+        <>
+          {(['osc', 'fm'] as const).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => set('synthMode', mode)}
+              className="text-[8px] uppercase tracking-wider px-2 py-0.5 rounded font-medium transition-all"
+              style={{
+                background: params.synthMode === mode ? `${color}28` : 'transparent',
+                border: `1px solid ${params.synthMode === mode ? color : '#2a2a3a'}`,
+                color: params.synthMode === mode ? color : '#8888a0',
+              }}
+            >
+              {mode}
+            </button>
+          ))}
+        </>,
+        modeTarget,
+      )}
+
+      {/* Portal Filter/FX/LFO toggles into FloatingPanel header right */}
+      {rightTarget && createPortal(
+        <>
+          {([
+            { label: 'flt', shown: showFilter, toggle: () => setShowFilter(!showFilter) },
+            { label: 'fx', shown: showFx, toggle: () => setShowFx(!showFx) },
+            { label: 'lfo', shown: showLfo, toggle: () => setShowLfo(!showLfo) },
+          ] as const).map(({ label, shown, toggle }) => (
+            <button
+              key={label}
+              onClick={toggle}
+              className="text-[8px] uppercase tracking-wider px-2 py-0.5 rounded font-medium transition-all"
+              style={{
+                background: shown ? `${color}28` : `${color}10`,
+                border: `1px solid ${shown ? color : `${color}50`}`,
+                color: shown ? color : `${color}80`,
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </>,
+        rightTarget,
+      )}
+
+      {/* Visualizer strip — full width below header */}
+      <div className="shrink-0" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', height: 100 }}>
+        <SynthVisualizer orbitIndex={instrument.orbitIndex} color={color} />
+      </div>
+
+      {/* Main content — 2-column grid with independent scroll per column */}
+      <div className="flex-1 min-h-0">
+        {params.synthMode === 'fm' ? (
+          <div className="grid gap-0 h-full" style={{ gridTemplateColumns: '1fr 1fr' }}>
+            {/* Left column: FM operators */}
+            <div className="p-2 pt-7 flex flex-col gap-1 overflow-y-auto" style={{ borderRight: '1px solid rgba(255,255,255,0.03)' }}>
+              <FMSection params={params} color={color} set={set} />
+            </div>
+            {/* Right column: Filter, FX, LFO */}
+            <div className="p-2 pt-7 flex flex-col gap-1 overflow-y-auto">
+              {showFilter && <FilterSection params={params} color={color} set={set} modProps={modProps} getModulatedValue={(t) => engine.getModulatedValue(t)} />}
+              {showLfo && lfoContent(true)}
+              {showFx && <FXSection params={params} color={color} set={set} modProps={modProps} />}
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-0 h-full" style={{ gridTemplateColumns: '1fr 1fr' }}>
+            {/* Left column: Oscillators */}
+            <div className="p-2 pt-7 flex flex-col gap-1 overflow-y-auto" style={{ borderRight: '1px solid rgba(255,255,255,0.03)' }}>
+              <OscillatorSection oscIndex={1} params={params} color={color} set={set} modProps={modProps}>
+                <InlineEnvelope
+                  label="env 1" color={color}
+                  attack={params.gainAttack} decay={params.gainDecay}
+                  sustain={params.gainSustain} release={params.gainRelease}
+                  onChange={envOnChange}
+                  modProps={(key, label) => modProps(key as keyof SynthParams, label)}
+                />
+              </OscillatorSection>
+              <OscillatorSection oscIndex={2} params={params} color={color} set={set} modProps={modProps}>
+                <InlineEnvelope
+                  label="env 2" color={color}
+                  attack={params.gainAttack} decay={params.gainDecay}
+                  sustain={params.gainSustain} release={params.gainRelease}
+                  onChange={envOnChange}
+                />
+              </OscillatorSection>
+              <OscillatorSection oscIndex={3} params={params} color={color} set={set} modProps={modProps}>
+                <InlineEnvelope
+                  label="env 3" color={color}
+                  attack={params.gainAttack} decay={params.gainDecay}
+                  sustain={params.gainSustain} release={params.gainRelease}
+                  onChange={envOnChange}
+                />
+              </OscillatorSection>
+            </div>
+
+            {/* Right column: Filter, LFO, FX */}
+            <div className="p-2 pt-7 flex flex-col gap-1 overflow-y-auto">
+              {showFilter && <FilterSection params={params} color={color} set={set} modProps={modProps} getModulatedValue={(t) => engine.getModulatedValue(t)} />}
+              {showLfo && lfoContent(true)}
+              {showFx && <FXSection params={params} color={color} set={set} modProps={modProps} />}
+            </div>
+          </div>
+        )}
+      </div>
+
+    </div>
+  );
+}
 
 // ─── Main component ──────────────────────────────────────────────────────────
 
@@ -308,49 +533,30 @@ export function SynthPanel() {
     const isString = params.vcoType === 'string';
     const isClassic = !isWT && !isString;
     const bankId = isWT ? params.vcoType.slice(3) : 'basic_shapes';
+    const uniVoices = Math.round(params.unisonVoices);
+    const pan = params.vcoPan;
     return (
       <>
+        {/* Mode selector */}
         <div className="flex gap-0.5 w-full">
-          <button
-            onClick={() => { if (!isClassic) set('vcoType', 'sawtooth'); }}
+          <button onClick={() => { if (!isClassic) set('vcoType', 'sawtooth'); }}
             className="flex-1 text-[8px] uppercase tracking-wider py-0.5 rounded transition-all"
-            style={{
-              background: isClassic ? `${color}28` : 'transparent',
-              border: `1px solid ${isClassic ? color : '#2a2a3a'}`,
-              color: isClassic ? color : '#8888a0',
-            }}
-          >
-            Classic
-          </button>
-          <button
-            onClick={() => { if (!isWT) set('vcoType', `wt:${bankId}`); }}
+            style={{ background: isClassic ? `${color}28` : 'transparent', border: `1px solid ${isClassic ? color : '#2a2a3a'}`, color: isClassic ? color : '#8888a0' }}
+          >Classic</button>
+          <button onClick={() => { if (!isWT) set('vcoType', `wt:${bankId}`); }}
             className="flex-1 text-[8px] uppercase tracking-wider py-0.5 rounded transition-all"
-            style={{
-              background: isWT ? `${color}28` : 'transparent',
-              border: `1px solid ${isWT ? color : '#2a2a3a'}`,
-              color: isWT ? color : '#8888a0',
-            }}
-          >
-            Wavetable
-          </button>
-          <button
-            onClick={() => set('vcoType', 'string')}
+            style={{ background: isWT ? `${color}28` : 'transparent', border: `1px solid ${isWT ? color : '#2a2a3a'}`, color: isWT ? color : '#8888a0' }}
+          >Wavetable</button>
+          <button onClick={() => set('vcoType', 'string')}
             className="flex-1 text-[8px] uppercase tracking-wider py-0.5 rounded transition-all"
-            style={{
-              background: isString ? `${color}28` : 'transparent',
-              border: `1px solid ${isString ? color : '#2a2a3a'}`,
-              color: isString ? color : '#8888a0',
-            }}
-          >
-            String
-          </button>
+            style={{ background: isString ? `${color}28` : 'transparent', border: `1px solid ${isString ? color : '#2a2a3a'}`, color: isString ? color : '#8888a0' }}
+          >String</button>
         </div>
 
+        {/* Wave shape / bank selection */}
         {isString ? (
           <>
-            <div className="text-[8px] text-text-secondary/50 px-1 py-1">
-              Karplus-Strong physical modeling
-            </div>
+            <div className="text-[8px] text-text-secondary/50 px-1 py-1">Karplus-Strong physical modeling</div>
             <KnobRow>
               <SynthKnob label="Damp" value={params.stringDamping ?? 4000} min={200} max={12000} step={50} unit="Hz" defaultValue={4000} color={color} onChange={(v) => set('stringDamping', v)} />
               <SynthKnob label="Decay" value={params.stringDecay ?? 0.995} min={0.9} max={0.999} step={0.001} defaultValue={0.995} color={color} onChange={(v) => set('stringDecay', v)} />
@@ -358,22 +564,20 @@ export function SynthPanel() {
           </>
         ) : isWT ? (
           <>
-            <select
-              value={bankId}
-              onChange={(e) => set('vcoType', `wt:${e.target.value}`)}
+            <select value={bankId} onChange={(e) => set('vcoType', `wt:${e.target.value}`)}
               className="w-full text-[9px] py-1 px-2 rounded border bg-transparent outline-none cursor-pointer"
-              style={{ borderColor: `${color}40`, color }}
-            >
+              style={{ borderColor: `${color}40`, color }}>
               {WAVETABLE_BANKS.map((b) => (
-                <option key={b.id} value={b.id} style={{ background: '#0e0e18', color: '#ccc' }}>
-                  {b.name}
-                </option>
+                <option key={b.id} value={b.id} style={{ background: '#0e0e18', color: '#ccc' }}>{b.name}</option>
               ))}
             </select>
-            <OscDisplay waveType={params.vcoType} color={color} wtPosition={params.wtPosition ?? 0} />
-            <KnobRow>
-              <SynthKnob label="Pos" value={params.wtPosition ?? 0} min={0} max={1} step={0.005} defaultValue={0} color={color} onChange={(v) => set('wtPosition', v)} {...modProps('wtPosition', 'Pos')} />
-            </KnobRow>
+            <select value={params.wtWarpMode ?? 0} onChange={(e) => set('wtWarpMode', Number(e.target.value))}
+              className="w-full text-[9px] py-1 px-2 rounded border bg-transparent outline-none cursor-pointer"
+              style={{ borderColor: `${color}40`, color }}>
+              {WARP_MODE_NAMES.map((name, i) => (
+                <option key={i} value={i} style={{ background: '#0e0e18', color: '#ccc' }}>{name}</option>
+              ))}
+            </select>
           </>
         ) : (
           <>
@@ -383,30 +587,39 @@ export function SynthPanel() {
                   const idx = row * 5 + i;
                   const active = params.vcoType === shape;
                   return (
-                    <button
-                      key={shape}
-                      onClick={() => set('vcoType', shape)}
+                    <button key={shape} onClick={() => set('vcoType', shape)}
                       className="flex-1 text-[8px] uppercase tracking-wider py-0.5 rounded transition-all"
-                      style={{
-                        background: active ? `${color}28` : 'transparent',
-                        border: `1px solid ${active ? color : '#2a2a3a'}`,
-                        color: active ? color : '#8888a0',
-                      }}
-                    >
-                      {ALL_WAVE_LABELS[idx]}
-                    </button>
+                      style={{ background: active ? `${color}28` : 'transparent', border: `1px solid ${active ? color : '#2a2a3a'}`, color: active ? color : '#8888a0' }}
+                    >{ALL_WAVE_LABELS[idx]}</button>
                   );
                 })}
               </div>
             ))}
-            <OscDisplay waveType={params.vcoType} color={color} />
           </>
         )}
-        <KnobRow>
-          <SynthKnob label="Gain" value={params.vcoGain} min={0} max={1} defaultValue={1} color={color} onChange={(v) => set('vcoGain', v)} {...modProps('vcoGain', 'Gain')} />
-          <SynthKnob label="Pan" value={params.vcoPan} min={-1} max={1} defaultValue={0} color={color} onChange={(v) => set('vcoPan', v)} {...modProps('vcoPan', 'Pan')} />
-          <SynthKnob label="Tune" value={params.vcoDetune} min={-100} max={100} step={1} unit="¢" defaultValue={0} color={color} onChange={(v) => set('vcoDetune', v)} {...modProps('vcoDetune', 'Tune')} />
-        </KnobRow>
+
+        {/* Display */}
+        {isWT ? (
+          <div className="flex gap-1.5 items-stretch">
+            <div className="flex-1 min-w-0" style={{ border: '1px solid rgba(255,255,255,0.06)', borderRadius: 4, overflow: 'hidden' }}>
+              <WavetableDisplay3D bankId={bankId} position={params.wtPosition ?? 0} warpMode={params.wtWarpMode ?? 0} warpAmount={params.wtWarpAmount ?? 0} color={color} height={100} />
+            </div>
+            <div className="flex flex-col justify-center gap-2">
+              <SynthKnob label="Pos" value={params.wtPosition ?? 0} min={0} max={1} step={0.005} defaultValue={0} color={color} onChange={(v) => set('wtPosition', v)} {...modProps('wtPosition', 'Pos')} />
+              <SynthKnob label="Warp" value={params.wtWarpAmount ?? 0} min={0} max={1} step={0.005} defaultValue={0} color={color} onChange={(v) => set('wtWarpAmount', v)} {...modProps('wtWarpAmount', 'Warp')} />
+            </div>
+          </div>
+        ) : isString ? (
+          <div style={{ border: '1px solid rgba(255,255,255,0.06)', borderRadius: 4, overflow: 'hidden' }}>
+            <StringDisplay damping={params.stringDamping ?? 4000} decay={params.stringDecay ?? 0.995} color={color} height={80} />
+          </div>
+        ) : (
+          <div style={{ border: '1px solid rgba(255,255,255,0.06)', borderRadius: 4, overflow: 'hidden' }}>
+            <OscDisplay waveType={params.vcoType} color={color} />
+          </div>
+        )}
+
+        {/* Octave */}
         <div>
           <span className="text-[8px] text-text-secondary/60 uppercase tracking-wider">Octave</span>
           <div className="flex gap-0.5 mt-1">
@@ -422,28 +635,41 @@ export function SynthPanel() {
             ))}
           </div>
         </div>
-        <div>
-          <span className="text-[8px] text-text-secondary/60 uppercase tracking-wider">Unison</span>
-          <div className="flex gap-0.5 mt-1">
-            {[1, 2, 3, 4, 5, 6, 7].map((n) => (
-              <button key={n} onClick={() => set('unisonVoices', n)}
-                className="flex-1 text-[8px] py-0.5 rounded transition-all"
-                style={{
-                  background: Math.round(params.unisonVoices) === n ? `${color}28` : 'transparent',
-                  border: `1px solid ${Math.round(params.unisonVoices) === n ? color : '#2a2a3a'}`,
-                  color: Math.round(params.unisonVoices) === n ? color : '#8888a0',
-                }}
-              >{n}</button>
-            ))}
-          </div>
+
+        {/* Unison knob + settings */}
+        <div className="flex items-end gap-3">
+          <SynthKnob label="Uni" value={uniVoices} min={1} max={7} step={1} defaultValue={1} color={color} size="md" onChange={(v) => set('unisonVoices', Math.round(v))} />
+          {uniVoices > 1 && (
+            <>
+              <SynthKnob label="Det" value={params.unisonDetune} min={0} max={50} unit="¢" defaultValue={10} color={color} onChange={(v) => set('unisonDetune', v)} {...modProps('unisonDetune', 'Det')} />
+              <SynthKnob label="Sprd" value={params.unisonSpread} min={0} max={1} defaultValue={0.7} color={color} onChange={(v) => set('unisonSpread', v)} {...modProps('unisonSpread', 'Sprd')} />
+              <SynthKnob label="Drift" value={params.unisonDrift ?? 0} min={0} max={1} defaultValue={0} color={color} onChange={(v) => set('unisonDrift', v)} {...modProps('unisonDrift', 'Drift')} />
+            </>
+          )}
         </div>
-        {params.unisonVoices > 1 && (
-          <KnobRow>
-            <SynthKnob label="Det" value={params.unisonDetune} min={0} max={50} unit="¢" defaultValue={10} color={color} onChange={(v) => set('unisonDetune', v)} {...modProps('unisonDetune', 'Det')} />
-            <SynthKnob label="Sprd" value={params.unisonSpread} min={0} max={1} defaultValue={0.7} color={color} onChange={(v) => set('unisonSpread', v)} {...modProps('unisonSpread', 'Sprd')} />
-            <SynthKnob label="Drift" value={params.unisonDrift ?? 0} min={0} max={1} defaultValue={0} color={color} onChange={(v) => set('unisonDrift', v)} {...modProps('unisonDrift', 'Drift')} />
-          </KnobRow>
-        )}
+
+        {/* Tune, Pan slider, Level */}
+        <div className="flex items-end gap-1">
+          <SynthKnob label="Tune" value={params.vcoDetune} min={-100} max={100} step={1} unit="¢" defaultValue={0} color={color} onChange={(v) => set('vcoDetune', v)} {...modProps('vcoDetune', 'Tune')} />
+          <div className="flex-1 flex flex-col gap-0.5 min-w-0 pb-1">
+            <span className="text-[7px] uppercase tracking-wider text-center" style={{ color: '#8888a0' }}>Pan</span>
+            <div className="relative flex items-center h-4">
+              <input type="range" min={-1} max={1} step={0.01} value={pan}
+                onChange={(e) => set('vcoPan', Number(e.target.value))}
+                onDoubleClick={() => set('vcoPan', 0)}
+                className="w-full h-1 appearance-none rounded-full cursor-pointer"
+                style={{ background: `linear-gradient(to right, transparent, ${color}40 ${(pan + 1) * 50}%, transparent)`, accentColor: color }}
+              />
+              <div className="absolute top-1/2 w-px h-2.5 -translate-y-1/2 pointer-events-none" style={{ left: '50%', background: `${color}50` }} />
+            </div>
+            <div className="flex justify-between text-[6px]" style={{ color: '#555' }}>
+              <span>L</span>
+              <span>{pan === 0 ? 'C' : pan < 0 ? `L${Math.round(Math.abs(pan) * 100)}` : `R${Math.round(pan * 100)}`}</span>
+              <span>R</span>
+            </div>
+          </div>
+          <SynthKnob label="Level" value={params.vcoGain} min={0} max={1} defaultValue={1} color={color} size="md" onChange={(v) => set('vcoGain', v)} {...modProps('vcoGain', 'Level')} />
+        </div>
       </>
     );
   };
@@ -452,9 +678,23 @@ export function SynthPanel() {
     <>
       <span className="text-[8px] text-text-secondary/60 uppercase tracking-wider">Sub 1</span>
       <TypeButtons labels={WAVE_LABELS} value={WAVE_TYPES.indexOf(params.sub1Type)} color={color} onChange={(i) => set('sub1Type', WAVE_TYPES[i])} />
+      <div>
+        <span className="text-[8px] text-text-secondary/60 uppercase tracking-wider">Octave</span>
+        <div className="flex gap-0.5 mt-1">
+          {[-2, -1, 0, 1, 2].map((oct) => {
+            const storeVal = oct * 12;
+            const active = Math.round(params.sub1Offset) === storeVal;
+            return (
+              <button key={oct} onClick={() => set('sub1Offset', storeVal)}
+                className="flex-1 text-[8px] py-0.5 rounded transition-all"
+                style={{ background: active ? `${color}28` : 'transparent', border: `1px solid ${active ? color : '#2a2a3a'}`, color: active ? color : '#8888a0' }}
+              >{oct > 0 ? `+${oct}` : oct}</button>
+            );
+          })}
+        </div>
+      </div>
       <KnobRow>
-        <SynthKnob label="Gain" value={params.sub1Gain} min={0} max={1} defaultValue={0} color={color} onChange={(v) => set('sub1Gain', v)} {...modProps('sub1Gain', 'Gain')} />
-        <SynthKnob label="Oct" value={params.sub1Offset} min={-24} max={24} step={1} unit="st" defaultValue={0} color={color} onChange={(v) => set('sub1Offset', Math.round(v))} />
+        <SynthKnob label="Level" value={params.sub1Gain} min={0} max={1} defaultValue={0} color={color} onChange={(v) => set('sub1Gain', v)} {...modProps('sub1Gain', 'Level')} />
         <SynthKnob label="Pan" value={params.sub1Pan} min={-1} max={1} defaultValue={0} color={color} onChange={(v) => set('sub1Pan', v)} {...modProps('sub1Pan', 'Pan')} />
       </KnobRow>
       {/* Ring Modulation (Sub1 × Main) */}
@@ -476,9 +716,23 @@ export function SynthPanel() {
       </div>
       <span className="text-[8px] text-text-secondary/60 uppercase tracking-wider mt-1">Sub 2</span>
       <TypeButtons labels={WAVE_LABELS} value={WAVE_TYPES.indexOf(params.sub2Type)} color={color} onChange={(i) => set('sub2Type', WAVE_TYPES[i])} />
+      <div>
+        <span className="text-[8px] text-text-secondary/60 uppercase tracking-wider">Octave</span>
+        <div className="flex gap-0.5 mt-1">
+          {[-2, -1, 0, 1, 2].map((oct) => {
+            const storeVal = oct * 12;
+            const active = Math.round(params.sub2Offset) === storeVal;
+            return (
+              <button key={oct} onClick={() => set('sub2Offset', storeVal)}
+                className="flex-1 text-[8px] py-0.5 rounded transition-all"
+                style={{ background: active ? `${color}28` : 'transparent', border: `1px solid ${active ? color : '#2a2a3a'}`, color: active ? color : '#8888a0' }}
+              >{oct > 0 ? `+${oct}` : oct}</button>
+            );
+          })}
+        </div>
+      </div>
       <KnobRow>
-        <SynthKnob label="Gain" value={params.sub2Gain} min={0} max={1} defaultValue={0} color={color} onChange={(v) => set('sub2Gain', v)} {...modProps('sub2Gain', 'Gain')} />
-        <SynthKnob label="Oct" value={params.sub2Offset} min={-24} max={24} step={1} unit="st" defaultValue={0} color={color} onChange={(v) => set('sub2Offset', Math.round(v))} />
+        <SynthKnob label="Level" value={params.sub2Gain} min={0} max={1} defaultValue={0} color={color} onChange={(v) => set('sub2Gain', v)} {...modProps('sub2Gain', 'Level')} />
         <SynthKnob label="Pan" value={params.sub2Pan} min={-1} max={1} defaultValue={0} color={color} onChange={(v) => set('sub2Pan', v)} {...modProps('sub2Pan', 'Pan')} />
       </KnobRow>
     </>
@@ -499,7 +753,7 @@ export function SynthPanel() {
   const filterContent = () => (
     <>
       <TypeButtons labels={FILTER_LABELS} value={filterTypeIdx >= 0 ? filterTypeIdx : 0} color={color} onChange={(i) => set('filterType', FILTER_TYPES[i] as SynthParams['filterType'])} />
-      <FilterCurveDisplay filterType={filterTypeIdx >= 0 ? filterTypeIdx : 0} frequency={params.filterFreq} q={params.filterQ} color={color} />
+      <FilterCurveDisplay filterType={filterTypeIdx >= 0 ? filterTypeIdx : 0} frequency={params.filterFreq} q={params.filterQ} color={color} getModulatedValues={() => ({ frequency: engine.getModulatedValue('filterFreq'), q: engine.getModulatedValue('filterQ') })} />
       <KnobRow>
         <SynthKnob label="Freq" value={params.filterFreq} min={20} max={20000} step={10} unit="Hz" defaultValue={8000} color={color} onChange={(v) => set('filterFreq', v)} {...modProps('filterFreq', 'Freq')} />
         <SynthKnob label="Q" value={params.filterQ} min={0} max={20} defaultValue={0} color={color} onChange={(v) => set('filterQ', v)} {...modProps('filterQ', 'Q')} />
@@ -512,7 +766,7 @@ export function SynthPanel() {
     </>
   );
 
-  const lfoContent = (compact?: boolean) => (
+  const lfoContent = (compact?: boolean, noBorder?: boolean) => (
     <LFOPanel
       lfos={lfos as [typeof DEFAULT_LFO_SLOT, typeof DEFAULT_LFO_SLOT, typeof DEFAULT_LFO_SLOT, typeof DEFAULT_LFO_SLOT]}
       onLFOChange={(idx, lfoParams) => {
@@ -524,6 +778,7 @@ export function SynthPanel() {
       instrumentColor={color}
       bpm={bpm}
       compact={compact}
+      noBorder={noBorder}
     />
   );
 
@@ -627,12 +882,12 @@ export function SynthPanel() {
   return (
     <ModulationProvider assignments={modAssignments} onAssignmentsChange={handleModAssignmentsChange}>
     <div
-      className={`synth-panel bg-bg-secondary ${isFloating ? 'flex-1 min-h-0' : 'border-l border-border shrink-0'} flex flex-col w-full ${isFloating ? 'overflow-hidden' : 'overflow-y-auto'}`}
+      className={`synth-panel bg-bg-secondary ${isFloating ? 'flex-1 min-h-0' : 'border-l border-border shrink-0 h-full'} flex flex-col w-full overflow-hidden`}
     >
       {/* ─── Header: name + float toggle + collapse ──────────────────── */}
       {!isFloating && (
       <div
-        className="flex items-center justify-between px-4 py-2 shrink-0"
+        className="flex items-center justify-between px-4 py-2 shrink-0 bg-bg-secondary z-10"
         style={{ borderBottom: `1px solid ${color}30` }}
       >
         <span className="text-[11px] font-semibold uppercase tracking-wider truncate" style={{ color }}>
@@ -670,67 +925,66 @@ export function SynthPanel() {
 
       {!synthCollapsed && <>
         {isFloating ? (
-          /* ═══════════════════ WIDE MODE: 3-column VST layout ═══════════════════ */
-          <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-            {/* Top strip: visualizer + preset */}
-            <div className="flex shrink-0" style={{ borderBottom: `1px solid ${color}20` }}>
-              <div className="flex-1 min-w-0">
-                <SynthVisualizer orbitIndex={instrument.orbitIndex} color={color} />
-              </div>
-              <div className="flex items-center gap-2 px-4 shrink-0" style={{ borderLeft: `1px solid ${color}15` }}>
-                <span className="text-[9px] uppercase tracking-wider shrink-0" style={{ color }}>Preset</span>
-                <PresetBrowser
-                  engine={engine} color={color} currentPresetName={currentPresetName}
-                  onPresetLoaded={() => { updateEngineParams(instrument.id, engine.getParams()); forceUpdate(); }}
-                />
-              </div>
-            </div>
-
-            {/* 3-column grid */}
-            <div className="grid flex-1 min-h-0" style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
-              {/* Column 1: Oscillators */}
-              <div className="overflow-y-auto" style={{ borderRight: `1px solid ${color}15` }}>
-                <WideSection label="Oscillator">{oscContent()}</WideSection>
-                <WideSection label="Sub Oscillators">{subOscContent()}</WideSection>
-              </div>
-
-              {/* Column 2: Modulation */}
-              <div className="overflow-y-auto" style={{ borderRight: `1px solid ${color}15` }}>
-                <WideSection label="Envelope">{envelopeContent()}</WideSection>
-                <WideSection label="Filter">{filterContent()}</WideSection>
-                {lfoContent(true)}
-              </div>
-
-              {/* Column 3: Output */}
-              <div className="overflow-y-auto">
-                <WideSection label="FX">{fxContent()}</WideSection>
-                <WideSection label="FM Synthesis">{fmContent()}</WideSection>
-                <WideSection label="Master">{masterContent()}</WideSection>
-              </div>
-            </div>
-          </div>
+          /* ═══════════════════ WIDE MODE: Vital-inspired layout ═══════════════════ */
+          <FloatingLayout
+            params={params} color={color} set={set} modProps={modProps}
+            engine={engine} instrument={instrument}
+            currentPresetName={currentPresetName}
+            updateEngineParams={updateEngineParams}
+            forceUpdate={forceUpdate}
+            lfoContent={lfoContent}
+          />
         ) : (
           /* ═══════════════════ NARROW MODE: original stacked layout ═════════════ */
-          <>
+          <div className="flex flex-col flex-1 min-h-0">
             <div className="shrink-0" style={{ borderBottom: `1px solid ${color}20` }}>
               <SynthVisualizer orbitIndex={instrument.orbitIndex} color={color} />
             </div>
-            <div className="flex items-center gap-2 px-4 py-2 shrink-0" style={{ borderBottom: `1px solid ${color}30` }}>
-              <span className="text-[9px] uppercase tracking-wider shrink-0" style={{ color }}>Preset</span>
+            <div className="flex items-center gap-2 px-4 py-2 shrink-0 bg-bg-secondary z-10" style={{ borderBottom: `1px solid ${color}30` }}>
+              {(['osc', 'fm'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => set('synthMode', mode)}
+                  className="text-[9px] uppercase tracking-wider px-3 py-1 rounded font-medium transition-all shrink-0"
+                  style={{
+                    background: params.synthMode === mode ? `${color}28` : 'transparent',
+                    border: `1px solid ${params.synthMode === mode ? color : '#2a2a3a'}`,
+                    color: params.synthMode === mode ? color : '#8888a0',
+                  }}
+                >
+                  {mode}
+                </button>
+              ))}
               <PresetBrowser
                 engine={engine} color={color} currentPresetName={currentPresetName}
                 onPresetLoaded={() => { updateEngineParams(instrument.id, engine.getParams()); forceUpdate(); }}
               />
             </div>
-            <Section label="Oscillator" color={color} defaultOpen>{oscContent()}</Section>
-            <Section label="Sub Oscillators" color={color}>{subOscContent()}</Section>
-            <Section label="Envelope" color={color} defaultOpen>{envelopeContent()}</Section>
-            <Section label="Filter" color={color}>{filterContent()}</Section>
-            {lfoContent()}
-            <Section label="FM Synthesis" color={color}>{fmContent()}</Section>
-            <Section label="FX" color={color}>{fxContent()}</Section>
-            <Section label="Master" color={color} defaultOpen>{masterContent()}</Section>
-          </>
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              {params.synthMode === 'fm' ? (
+                <>
+                  <Section label="FM Operators" color={color} defaultOpen>
+                    <FMSection params={params} color={color} set={set} />
+                  </Section>
+                  <Section label="Filter" color={color}>{filterContent()}</Section>
+                  {lfoContent(false, true)}
+                  <Section label="FX" color={color}>{fxContent()}</Section>
+                  <Section label="Master" color={color} defaultOpen>{masterContent()}</Section>
+                </>
+              ) : (
+                <>
+                  <Section label="Envelope" color={color} defaultOpen>{envelopeContent()}</Section>
+                  <Section label="Oscillator" color={color} defaultOpen>{oscContent()}</Section>
+                  <Section label="Sub Oscillators" color={color}>{subOscContent()}</Section>
+                  <Section label="Filter" color={color}>{filterContent()}</Section>
+                  {lfoContent(false, true)}
+                  <Section label="FM Synthesis" color={color}>{fmContent()}</Section>
+                  <Section label="FX" color={color}>{fxContent()}</Section>
+                  <Section label="Master" color={color} defaultOpen>{masterContent()}</Section>
+                </>
+              )}
+            </div>
+          </div>
         )}
       </>}
     </div>

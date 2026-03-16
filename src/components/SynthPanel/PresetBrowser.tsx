@@ -311,17 +311,22 @@ export function PresetBrowser({ engine, color, currentPresetName, onPresetLoaded
     setRenameId(null);
   };
 
-  // Popup position — clamp horizontally so it doesn't overflow the right edge
+  // Popup position — adaptive: open downward if more space below, upward otherwise
   const rect = triggerRef.current?.getBoundingClientRect();
-  const popupW = 280;
+  const popupW = rect ? Math.max(280, rect.width) : 280;
   const popupMaxH = 420;
   const popupLeft = rect ? Math.min(rect.left, window.innerWidth - popupW - 8) : 0;
+  const spaceAbove = rect ? rect.top : 0;
+  const spaceBelow = rect ? window.innerHeight - rect.bottom : 0;
+  const openDown = spaceBelow >= spaceAbove || spaceBelow >= popupMaxH;
   const popupStyle: React.CSSProperties = rect ? {
     position: 'fixed',
-    bottom: window.innerHeight - rect.top + 4,
+    ...(openDown
+      ? { top: rect.bottom + 4, maxHeight: Math.min(popupMaxH, spaceBelow - 8) }
+      : { bottom: window.innerHeight - rect.top + 4, maxHeight: Math.min(popupMaxH, spaceAbove - 8) }
+    ),
     left: popupLeft,
     width: popupW,
-    maxHeight: Math.min(popupMaxH, rect.top - 8),
     zIndex: 10000,
   } : {};
 
@@ -331,7 +336,8 @@ export function PresetBrowser({ engine, color, currentPresetName, onPresetLoaded
       <button
         ref={triggerRef}
         onClick={() => browserOpen ? closeBrowser() : openBrowser()}
-        className="flex-1 flex items-center justify-between bg-bg-tertiary text-text-primary text-[10px] px-2 py-1 rounded border border-border hover:border-white/20 transition-colors truncate"
+        className="flex items-center justify-between bg-bg-tertiary text-text-primary text-[10px] px-2 py-1 rounded border border-border hover:border-white/20 transition-colors truncate"
+        style={{ width: 280, maxWidth: '100%' }}
       >
         <span className="truncate">{currentPresetName || 'INIT'}</span>
         <span className="text-text-secondary/40 text-[8px] ml-1">{browserOpen ? '▲' : '▼'}</span>

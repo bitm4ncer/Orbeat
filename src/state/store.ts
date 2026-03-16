@@ -447,6 +447,10 @@ export interface StoreState {
   setMidiRecordArmed: (armed: boolean) => void;
   setMidiRecordMode: (mode: 'overdub' | 'replace') => void;
 
+  // Audio output device
+  audioOutputDeviceId: string | null;
+  setAudioOutputDevice: (id: string | null) => void;
+
   // Audio input recording
   audioInputDeviceId: string | null;
   audioInputMonitor: boolean;
@@ -568,7 +572,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
   synthPanelMode: (localStorage.getItem('orbitrack:synthPanelMode') as 'inline' | 'floating' | 'popout') || 'inline',
   synthFloatPos: JSON.parse(localStorage.getItem('orbitrack:synthFloatPos') || '{"x":100,"y":100}'),
-  synthFloatSize: JSON.parse(localStorage.getItem('orbitrack:synthFloatSize') || '{"w":900,"h":600}'),
+  synthFloatSize: JSON.parse(localStorage.getItem('orbitrack:synthFloatSize') || '{"w":624,"h":468}'),
   synthFloatMinimized: false,
   synthPanelCollapsed: false,
   setSynthPanelMode: (mode) => {
@@ -1596,6 +1600,17 @@ export const useStore = create<StoreState>((set, get) => ({
   midiRecordMode: 'overdub' as const,
   setMidiRecordArmed: (armed) => set({ midiRecordArmed: armed }),
   setMidiRecordMode: (mode) => set({ midiRecordMode: mode }),
+
+  // Audio output device
+  audioOutputDeviceId: localStorage.getItem('orbitrack_audioOutputDeviceId') || null,
+  setAudioOutputDevice: (id) => {
+    set({ audioOutputDeviceId: id });
+    if (id) {
+      localStorage.setItem('orbitrack_audioOutputDeviceId', id);
+    } else {
+      localStorage.removeItem('orbitrack_audioOutputDeviceId');
+    }
+  },
 
   // Audio input recording
   audioInputDeviceId: null,

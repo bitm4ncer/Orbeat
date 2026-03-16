@@ -537,8 +537,10 @@ export function TrackTimeline() {
               );
             })
           ) : (
-            <div className="flex items-center justify-center w-full h-full text-muted-foreground text-sm">
-              No arrangement steps. Click "Add Scene" to get started.
+            <div className="flex items-center justify-center w-full h-full text-text-secondary/30 text-sm">
+              {scenes.length === 0
+                ? 'No scenes \u2014 select instruments and press Ctrl+G to create a scene'
+                : 'No arrangement steps. Click "Add Scene" to get started.'}
             </div>
           )}
         </div>

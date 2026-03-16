@@ -3,8 +3,8 @@ import { useStore } from '../state/store';
 
 type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 
-const MIN_W = 500;
-const MIN_H = 400;
+const MIN_W = 460;
+const MIN_H = 340;
 
 export function useFloatResize() {
   const dragRef = useRef<{

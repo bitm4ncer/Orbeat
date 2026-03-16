@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useStore } from '../../state/store';
 import { MidiSettingsPanel } from '../MidiSettings/MidiSettingsPanel';
-import { getAudioInputDevices, requestMicPermission, getInputLevel, isCapturing, getCaptureDuration, onAudioDeviceChange, type AudioInputDevice } from '../../audio/audioInput';
+import { getAudioInputDevices, requestMicPermission, getInputLevel, isCapturing, getCaptureDuration, onAudioDeviceChange, type AudioInputDevice, getAudioOutputDevices, setAudioOutputDevice as setAudioOutput, type AudioOutputDevice } from '../../audio/audioInput';
 import { getAutosaveEnabled, setAutosaveEnabled, getAutosaveInterval, setAutosaveInterval, getInitialAutosave, setInitialAutosave } from '../../storage/sessionAutosave';
 import { getCobaltEndpoint, setCobaltEndpoint, getCobaltApiKey, setCobaltApiKey, DEFAULT_ENDPOINT } from '../../storage/cobaltSettings';
 import { testCobaltConnection } from '../../audio/videoImport';
@@ -52,6 +52,77 @@ function renderIcon(iconName: string): React.ReactNode {
     default:
       return null;
   }
+}
+
+function AudioOutputSection() {
+  const audioOutputDeviceId = useStore((s) => s.audioOutputDeviceId);
+  const storeSetOutputDevice = useStore((s) => s.setAudioOutputDevice);
+  const [devices, setDevices] = useState<AudioOutputDevice[]>([]);
+  const [switching, setSwitching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refreshDevices = useCallback(async () => {
+    const d = await getAudioOutputDevices();
+    setDevices(d);
+  }, []);
+
+  useEffect(() => {
+    refreshDevices();
+    const unsub = onAudioDeviceChange(() => { refreshDevices(); });
+    return unsub;
+  }, [refreshDevices]);
+
+  // Apply saved device on mount
+  useEffect(() => {
+    if (audioOutputDeviceId) {
+      setAudioOutput(audioOutputDeviceId).then((err) => {
+        if (err) setError(err);
+      });
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleChange = useCallback(async (deviceId: string) => {
+    setError(null);
+    setSwitching(true);
+    const id = deviceId || null;
+    if (id) {
+      const err = await setAudioOutput(deviceId);
+      if (err) {
+        setError(err);
+        setSwitching(false);
+        return;
+      }
+    }
+    storeSetOutputDevice(id);
+    setSwitching(false);
+  }, [storeSetOutputDevice]);
+
+  return (
+    <div className="space-y-2 mb-4">
+      <label className="text-xs font-medium text-text-secondary">Output Device</label>
+      <select
+        value={audioOutputDeviceId ?? ''}
+        onChange={(e) => handleChange(e.target.value)}
+        disabled={switching}
+        className="w-full px-3 py-2 text-xs bg-bg-tertiary border border-border rounded text-text-primary focus:outline-none focus:border-accent"
+      >
+        <option value="">System Default</option>
+        {devices.map((d) => (
+          <option key={d.deviceId} value={d.deviceId}>
+            {d.label}
+          </option>
+        ))}
+      </select>
+      {error && (
+        <p className="text-xs text-red-400 mt-1">{error}</p>
+      )}
+      {devices.length === 0 && (
+        <p className="text-[10px] text-text-secondary/50 mt-1">
+          No output devices detected. Your browser may not support output device enumeration.
+        </p>
+      )}
+    </div>
+  );
 }
 
 function AudioInputSection() {
@@ -715,12 +786,16 @@ export function SettingsPopup({ onClose }: { onClose: () => void }) {
                       </div>
                     </div>
 
-                    <div className="mt-6 p-3 bg-bg-tertiary/50 rounded border border-border/30">
+                    <div className="mt-4">
+                      <AudioOutputSection />
+                    </div>
+
+                    <div className="mt-2 p-3 bg-bg-tertiary/50 rounded border border-border/30">
                       <p className="text-xs text-text-secondary/70">
                         Audio context: <span className="font-mono text-accent">Web Audio API</span>
                       </p>
                       <p className="text-xs text-text-secondary/70 mt-1">
-                        Soundcard selection is automatic via your browser audio output settings.
+                        Output device selection requires Chrome 110+ or Edge 110+. Other browsers use the system default.
                       </p>
                     </div>
                   </div>
@@ -754,11 +829,83 @@ export function SettingsPopup({ onClose }: { onClose: () => void }) {
                       <div className="flex justify-between"><span className="text-accent/80 font-mono">Scroll</span><span>Adjust hit count</span></div>
                       <div className="flex justify-between"><span className="text-accent/80 font-mono">Ctrl + Scroll</span><span>Adjust step count</span></div>
                       <div className="flex justify-between"><span className="text-accent/80 font-mono">Alt + Scroll</span><span>Adjust volume</span></div>
+                      <div className="flex justify-between"><span className="text-accent/80 font-mono">Shift + Scroll</span><span>Zoom grid view</span></div>
                       <div className="flex justify-between"><span className="text-accent/80 font-mono">S button</span><span>Solo instrument</span></div>
                       <div className="flex justify-between"><span className="text-accent/80 font-mono">M button</span><span>Mute instrument</span></div>
                       <div className="flex justify-between"><span className="text-accent/80 font-mono">Shift + Click</span><span>Select multiple Orbs</span></div>
                       <div className="flex justify-between"><span className="text-accent/80 font-mono">Ctrl + G</span><span>Group Orbs to Scene</span></div>
                       <div className="flex justify-between"><span className="text-accent/80 font-mono">Shift + Ctrl + G</span><span>Ungroup</span></div>
+                    </div>
+                  </div>
+
+                  {/* Piano Keys */}
+                  <div className="border-t border-border/30 pt-4">
+                    <h3 className="text-sm font-semibold text-text-primary mb-3">Piano Keys (Synth selected)</h3>
+                    <div className="space-y-2">
+                      {/* Black keys */}
+                      <div className="flex gap-1 items-start text-xs">
+                        {[['W','C#'],['E','D#']].map(([k,n])=>(
+                          <div key={k} className="text-center">
+                            <div className="bg-accent/20 border border-accent/40 rounded px-2 py-0.5 text-accent/80 font-mono">{k}</div>
+                            <div className="text-text-secondary/60 text-[10px] mt-0.5">{n}</div>
+                          </div>
+                        ))}
+                        <div className="w-3" />
+                        {[['T','F#'],['Y','G#'],['U','A#']].map(([k,n])=>(
+                          <div key={k} className="text-center">
+                            <div className="bg-accent/20 border border-accent/40 rounded px-2 py-0.5 text-accent/80 font-mono">{k}</div>
+                            <div className="text-text-secondary/60 text-[10px] mt-0.5">{n}</div>
+                          </div>
+                        ))}
+                      </div>
+                      {/* White keys */}
+                      <div className="flex gap-1 items-start text-xs">
+                        {[['A','C'],['S','D'],['D','E'],['F','F'],['G','G'],['H','A'],['J','B']].map(([k,n])=>(
+                          <div key={k+n} className="text-center">
+                            <div className="bg-accent/10 border border-accent/30 rounded px-2 py-0.5 text-accent/80 font-mono">{k}</div>
+                            <div className="text-text-secondary/60 text-[10px] mt-0.5">{n}</div>
+                          </div>
+                        ))}
+                      </div>
+                      {/* Octave & velocity */}
+                      <div className="flex gap-1 items-start text-xs pt-1">
+                        <div className="text-center">
+                          <div className="bg-blue-500/20 border border-blue-500/40 rounded px-1.5 py-0.5 text-blue-400/80 font-mono">Z</div>
+                          <div className="text-text-secondary/60 text-[10px] mt-0.5">Oct-</div>
+                        </div>
+                        <div className="text-center">
+                          <div className="bg-blue-500/20 border border-blue-500/40 rounded px-1.5 py-0.5 text-blue-400/80 font-mono">X</div>
+                          <div className="text-text-secondary/60 text-[10px] mt-0.5">Oct+</div>
+                        </div>
+                        <div className="w-3" />
+                        <div className="text-center">
+                          <div className="bg-red-500/20 border border-red-500/40 rounded px-1.5 py-0.5 text-red-400/80 font-mono">C</div>
+                          <div className="text-text-secondary/60 text-[10px] mt-0.5">Vel-</div>
+                        </div>
+                        <div className="text-center">
+                          <div className="bg-red-500/20 border border-red-500/40 rounded px-1.5 py-0.5 text-red-400/80 font-mono">V</div>
+                          <div className="text-text-secondary/60 text-[10px] mt-0.5">Vel+</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Scenes & Track View */}
+                  <div className="border-t border-border/30 pt-4">
+                    <h3 className="text-sm font-semibold text-text-primary mb-3">Scenes & Track View</h3>
+                    <div className="space-y-3 text-xs text-text-secondary leading-relaxed">
+                      <div>
+                        <div className="text-accent/80 font-mono mb-0.5">Creating Scenes:</div>
+                        <div>Select one or more Orbs (Shift+Click), then press <span className="text-accent/80 font-mono">Ctrl+G</span> to group them into a Scene. Scenes appear as colored blocks at the bottom.</div>
+                      </div>
+                      <div>
+                        <div className="text-accent/80 font-mono mb-0.5">Track View:</div>
+                        <div>Click the <span className="text-accent/80">TRACK</span> button to enter Track Mode. Drag scene blocks in the timeline to arrange the order and length of each scene. Each scene bar shows how many bars it loops for.</div>
+                      </div>
+                      <div>
+                        <div className="text-accent/80 font-mono mb-0.5">Scene Controls:</div>
+                        <div>Within each scene block: Click to select, drag to reorder, use the colored label to rename. Right-click to remove from scene.</div>
+                      </div>
                     </div>
                   </div>
                 </div>

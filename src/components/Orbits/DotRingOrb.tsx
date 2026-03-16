@@ -1,48 +1,36 @@
 /**
- * DotRingOrb — pure SVG/DOM orbit display.
+ * DotRingOrb — Canvas-based orbit display.
  *
- * A fixed circle of SVG <circle> elements.  Hit-coloured dots rotate clockwise
+ * A ring of dots drawn on a <canvas>.  Hit-coloured dots rotate clockwise
  * through the fixed grid; when one reaches the bottom indicator it flashes white.
- * All per-frame updates go through direct DOM manipulation (refs), NOT React state,
- * so there are zero re-renders during playback.
+ * All per-frame work is pure Canvas 2D — zero DOM mutations, zero allocations.
  */
 
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef } from 'react';
 import * as Tone from 'tone';
 import { useStore } from '../../state/store';
 import { isInstrumentEffectivelyMuted } from '../../canvas/renderUtils';
+import { useAnimationLoop } from '../../hooks/useAnimationLoop';
 
 const TWO_PI = Math.PI * 2;
 const TRIGGER_ANGLE = Math.PI / 2; // 6 o'clock (bottom)
-
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-function hexToRgb(hex: string): string {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `${r},${g},${b}`;
-}
+const MAX_DOTS = 64; // max loopSize we'll ever see
 
 interface Props {
   instrumentId: string;
-  /** Rendered size in CSS px — the SVG viewBox matches this 1:1 */
+  /** Rendered size in CSS px */
   size: number;
 }
 
 export function DotRingOrb({ instrumentId, size }: Props) {
-  const svgRef = useRef<SVGSVGElement>(null);
-  const dotsRef = useRef<(SVGCircleElement | null)[]>([]);
-  const hitsTextRef = useRef<SVGTextElement>(null);
-  const loopTextRef = useRef<SVGTextElement>(null);
-  const indicatorRef = useRef<SVGLineElement>(null);
-  const rafRef = useRef(0);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
-  // Snapshot refs so the RAF loop reads fresh store without re-renders
+  // Store refs — updated via subscribe, zero re-renders during playback
   const instRef = useRef(useStore.getState().instruments.find((i) => i.id === instrumentId));
   const stateRef = useRef(useStore.getState());
 
-  // Keep refs fresh via Zustand subscribe (no re-renders)
   useEffect(() => {
     const unsub = useStore.subscribe((s) => {
       stateRef.current = s;
@@ -51,36 +39,79 @@ export function DotRingOrb({ instrumentId, size }: Props) {
     return unsub;
   }, [instrumentId]);
 
-  // Build dot elements once when loopSize changes — the ONLY thing that triggers re-render
+  // React-driven values (re-render only when these change)
   const inst = useStore((s) => s.instruments.find((i) => i.id === instrumentId));
   const loopSize = inst?.loopSize ?? 16;
   const color = inst?.color ?? '#6d8cff';
-  const rgb = hexToRgb(color);
 
-  const cx = size / 2;
-  const cy = size / 2;
-  const radius = size / 2 - 22; // ring padding
-
-  // Pre-compute fixed dot positions (never change for a given loopSize)
-  const dotPositions = useRef<{ x: number; y: number }[]>([]);
-  if (dotPositions.current.length !== loopSize) {
-    dotPositions.current = Array.from({ length: loopSize }, (_, g) => {
-      const angle = TRIGGER_ANGLE - (g / loopSize) * TWO_PI;
-      return { x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius };
-    });
+  // Parse color once
+  const rgbRef = useRef({ r: 0, g: 0, b: 0 });
+  const lastColorRef = useRef('');
+  if (color !== lastColorRef.current) {
+    lastColorRef.current = color;
+    rgbRef.current = {
+      r: parseInt(color.slice(1, 3), 16),
+      g: parseInt(color.slice(3, 5), 16),
+      b: parseInt(color.slice(5, 7), 16),
+    };
   }
 
-  // RAF loop — direct DOM updates, no setState
+  // Pre-computed dot positions — rebuilt only when loopSize or size changes
+  const dotXYRef = useRef(new Float32Array(MAX_DOTS * 2));
+  const layoutRef = useRef({ loopSize: 0, size: 0, cx: 0, cy: 0, radius: 0, fontSize: 0 });
+
+  if (loopSize !== layoutRef.current.loopSize || size !== layoutRef.current.size) {
+    const cx = size / 2;
+    const cy = size / 2;
+    const radius = size / 2 - 22;
+    const fontSize = Math.max(14, Math.floor(radius * 0.45));
+    layoutRef.current = { loopSize, size, cx, cy, radius, fontSize };
+
+    const xy = dotXYRef.current;
+    for (let g = 0; g < loopSize; g++) {
+      const angle = TRIGGER_ANGLE - (g / loopSize) * TWO_PI;
+      xy[g * 2] = cx + Math.cos(angle) * radius;
+      xy[g * 2 + 1] = cy + Math.sin(angle) * radius;
+    }
+  }
+
+  // Pre-allocated hit-step lookup — avoids Set allocations per frame
+  const hitStepsRef = useRef(new Uint8Array(MAX_DOTS));
+  const lastHitPosRef = useRef<unknown>(null);
+
+  // Previous frame state — skip redraw when nothing changed
+  const prevStepRef = useRef(-1);
+  const prevMutedRef = useRef(false);
+  const prevPlayingRef = useRef(false);
+  const prevHitsRef = useRef(-1);
+
+  // Init canvas context
   useEffect(() => {
-    const tick = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = size * dpr;
+    canvas.height = size * dpr;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctxRef.current = ctx;
+    }
+  }, [size]);
+
+  // Animation loop via shared hook
+  useAnimationLoop(
+    () => {
+      const ctx = ctxRef.current;
       const state = stateRef.current;
       const inst = instRef.current;
-      if (!inst) { rafRef.current = requestAnimationFrame(tick); return; }
+      if (!ctx || !inst) return;
 
-      const dots = dotsRef.current;
+      const { cx, cy, radius, fontSize } = layoutRef.current;
       const ls = inst.loopSize;
+      const cr = rgbRef.current.r, cg = rgbRef.current.g, cb = rgbRef.current.b;
 
-      // Transport progress
+      // Compute transport progress
       const transport = Tone.getTransport();
       const stepsPerBeat = state.stepsPerBeat ?? 8;
       const secondsPerStep = 60 / state.bpm / stepsPerBeat;
@@ -90,136 +121,110 @@ export function DotRingOrb({ instrumentId, size }: Props) {
         ? (totalSteps % ls) / ls : 0;
       const currentStep = Math.floor(instProg * ls) % ls;
 
-      // Build hit step set
-      const hitSteps = new Set<number>();
-      for (const hp of inst.hitPositions) {
-        hitSteps.add(Math.round(hp * ls) % ls);
-      }
-
-      // Rotate: original hit at step s → display at (s + currentStep) % ls
-      const rotatedHits = new Set<number>();
-      for (const s of hitSteps) {
-        rotatedHits.add((s - currentStep + ls) % ls);
-      }
-
-      const isMuted = inst.muted;
-      const activeColor = `rgba(${rgb},${isMuted ? 0.35 : 0.9})`;
-      const dimColor = 'rgba(255,255,255,0.07)';
-      const triggerStep = 0; // step 0 sits at the indicator (TRIGGER_ANGLE)
-
-      for (let g = 0; g < ls; g++) {
-        const dot = dots[g];
-        if (!dot) continue;
-
-        const isHit = rotatedHits.has(g);
-        const isTriggered = state.isPlaying && isHit && g === triggerStep;
-
-        if (isTriggered) {
-          dot.setAttribute('r', '6');
-          dot.setAttribute('fill', '#ffffff');
-        } else if (isHit) {
-          dot.setAttribute('r', '4.5');
-          dot.setAttribute('fill', activeColor);
-        } else {
-          dot.setAttribute('r', '2.5');
-          dot.setAttribute('fill', dimColor);
+      // Rebuild hit lookup only when hitPositions reference changes
+      if (inst.hitPositions !== lastHitPosRef.current) {
+        lastHitPosRef.current = inst.hitPositions;
+        hitStepsRef.current.fill(0);
+        for (const hp of inst.hitPositions) {
+          hitStepsRef.current[Math.round(hp * ls) % ls] = 1;
         }
       }
 
-      // Update center text
-      if (hitsTextRef.current) {
-        hitsTextRef.current.textContent = String(inst.hits);
+      // Skip full redraw if nothing visible changed
+      const isMuted = inst.muted;
+      if (
+        currentStep === prevStepRef.current &&
+        isMuted === prevMutedRef.current &&
+        state.isPlaying === prevPlayingRef.current &&
+        inst.hits === prevHitsRef.current &&
+        inst.hitPositions === lastHitPosRef.current
+      ) {
+        return; // identical frame — skip
       }
-      if (loopTextRef.current) {
-        loopTextRef.current.textContent = `/${inst.loopSize}`;
+      prevStepRef.current = currentStep;
+      prevMutedRef.current = isMuted;
+      prevPlayingRef.current = state.isPlaying;
+      prevHitsRef.current = inst.hits;
+
+      const hitArr = hitStepsRef.current;
+      const xy = dotXYRef.current;
+
+      // ── Clear ──
+      ctx.clearRect(0, 0, size, size);
+
+      // ── Ring stroke ──
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, TWO_PI);
+      ctx.strokeStyle = `rgba(${cr},${cg},${cb},0.15)`;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // ── Dots ──
+      const activeAlpha = isMuted ? 0.35 : 0.9;
+
+      for (let g = 0; g < ls; g++) {
+        // Rotate: original hit at step s → display at (s - currentStep + ls) % ls
+        const srcStep = (g + currentStep) % ls;
+        const isHit = hitArr[srcStep] === 1;
+        const isTriggered = state.isPlaying && isHit && g === 0; // g===0 is at TRIGGER_ANGLE
+
+        let dotR: number;
+        let fillStyle: string;
+
+        if (isTriggered) {
+          dotR = 6;
+          fillStyle = '#ffffff';
+        } else if (isHit) {
+          dotR = 4.5;
+          fillStyle = `rgba(${cr},${cg},${cb},${activeAlpha})`;
+        } else {
+          dotR = 2.5;
+          fillStyle = 'rgba(255,255,255,0.07)';
+        }
+
+        ctx.beginPath();
+        ctx.arc(xy[g * 2], xy[g * 2 + 1], dotR, 0, TWO_PI);
+        ctx.fillStyle = fillStyle;
+        ctx.fill();
       }
 
-      rafRef.current = requestAnimationFrame(tick);
-    };
+      // ── Indicator line at bottom (6 o'clock) ──
+      const indX = cx + Math.cos(TRIGGER_ANGLE) * radius;
+      const indY1 = cy + Math.sin(TRIGGER_ANGLE) * radius + 6;
+      const indY2 = indY1 + 14;
+      ctx.beginPath();
+      ctx.moveTo(indX, indY1);
+      ctx.lineTo(indX, indY2);
+      ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      ctx.stroke();
 
-    rafRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [loopSize, rgb, cx, cy, radius]);
+      // ── Center text: hits ──
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},0.8)`;
+      ctx.font = `bold ${fontSize}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(inst.hits), cx, cy - fontSize * 0.15);
 
-  // Store dot refs
-  const setDotRef = useCallback((idx: number) => (el: SVGCircleElement | null) => {
-    dotsRef.current[idx] = el;
-  }, []);
+      // ── Center text: /loopSize ──
+      const smallFont = Math.floor(fontSize * 0.5);
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.font = `${smallFont}px monospace`;
+      ctx.fillText(`/${inst.loopSize}`, cx, cy + fontSize * 0.7);
+    },
+    { targetFps: 60, visibilityRef: containerRef },
+  );
 
   if (!inst) return null;
 
-  const indicatorX = cx + Math.cos(TRIGGER_ANGLE) * radius;
-  const indicatorY1 = cy + Math.sin(TRIGGER_ANGLE) * radius + 6;
-  const indicatorY2 = indicatorY1 + 14;
-  const fontSize = Math.max(14, Math.floor(radius * 0.45));
-
   return (
-    <svg
-      ref={svgRef}
-      viewBox={`0 0 ${size} ${size}`}
-      className="w-full aspect-square"
-      style={{ overflow: 'visible' }}
-    >
-      {/* Ring stroke */}
-      <circle
-        cx={cx} cy={cy} r={radius}
-        fill="none"
-        stroke={`rgba(${rgb},0.15)`}
-        strokeWidth="1"
+    <div ref={containerRef} className="w-full aspect-square">
+      <canvas
+        ref={canvasRef}
+        className="w-full h-full"
+        style={{ imageRendering: 'auto' }}
       />
-
-      {/* Fixed dot positions */}
-      {dotPositions.current.map((pos, g) => (
-        <circle
-          key={g}
-          ref={setDotRef(g)}
-          cx={pos.x}
-          cy={pos.y}
-          r={2.5}
-          fill="rgba(255,255,255,0.07)"
-        />
-      ))}
-
-      {/* Fixed indicator line at bottom */}
-      <line
-        ref={indicatorRef}
-        x1={indicatorX}
-        y1={indicatorY1}
-        x2={indicatorX}
-        y2={indicatorY2}
-        stroke="rgba(255,255,255,0.75)"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-
-      {/* Center text: hits */}
-      <text
-        ref={hitsTextRef}
-        x={cx}
-        y={cy - fontSize * 0.15}
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fill={`rgba(${rgb},0.8)`}
-        fontFamily="monospace"
-        fontWeight="bold"
-        fontSize={fontSize}
-      >
-        {inst.hits}
-      </text>
-
-      {/* Center text: /loopSize */}
-      <text
-        ref={loopTextRef}
-        x={cx}
-        y={cy + fontSize * 0.7}
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fill="rgba(255,255,255,0.25)"
-        fontFamily="monospace"
-        fontSize={Math.floor(fontSize * 0.5)}
-      >
-        /{inst.loopSize}
-      </text>
-    </svg>
+    </div>
   );
 }

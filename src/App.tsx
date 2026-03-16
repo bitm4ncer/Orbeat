@@ -25,7 +25,7 @@ import { initRecordingSync } from './storage/recordingSync';
 import { restoreFromSetId, restoreLegacyAutosave, initSessionAutosave, getLastSetId, restoreEmergencySnapshot, clearEmergencySnapshot } from './storage/sessionAutosave';
 import { initUndoHistory } from './state/undoHistory';
 import { parseShareHash, decodeSetFromUrl } from './storage/urlShare';
-import { perfMonitor } from './debug/perfMonitor';
+import { perfMonitor, countStoreUpdate } from './debug/perfMonitor';
 import { LogConsole } from './components/LogConsole/LogConsole';
 
 function flattenFiles(entries: SampleEntry[]): SampleEntry[] {
@@ -68,7 +68,9 @@ function App() {
       }
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    // Count Zustand store updates for perf monitoring
+    const unsub = useStore.subscribe(countStoreUpdate);
+    return () => { window.removeEventListener('keydown', onKey); unsub(); };
   }, []);
 
   const [layerSidebarOpen, setLayerSidebarOpen] = useState(true);
@@ -113,6 +115,13 @@ function App() {
   useEffect(() => {
     const startAudio = async () => {
       await Tone.start();
+      // Apply saved audio output device
+      const savedOutputId = localStorage.getItem('orbitrack_audioOutputDeviceId');
+      if (savedOutputId) {
+        import('./audio/audioInput').then(({ setAudioOutputDevice }) => {
+          setAudioOutputDevice(savedOutputId);
+        });
+      }
       window.removeEventListener('mousedown', startAudio);
     };
     window.addEventListener('mousedown', startAudio);
@@ -299,7 +308,7 @@ function App() {
                   >
                     <div className="h-10 w-0.5 rounded-full bg-border/60 group-hover:bg-accent/60 transition-colors" />
                   </div>
-                  <div className={`shrink-0 h-full overflow-y-auto ${rightIsDragging ? '' : 'transition-[width] duration-300'}`} style={{ width: rightPanelWidth }}>
+                  <div className={`shrink-0 h-full overflow-hidden ${rightIsDragging ? '' : 'transition-[width] duration-300'}`} style={{ width: rightPanelWidth }}>
                     {isSynthSelected && !isSynthFloating && <SynthPanel />}
                     {isSamplerSelected && <SampleBank />}
                     {isLooperSelected && <LoopBrowser />}

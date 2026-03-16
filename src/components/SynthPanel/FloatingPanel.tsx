@@ -21,10 +21,11 @@ const EDGES = Object.keys(edgeStyles) as Array<'n' | 's' | 'e' | 'w' | 'ne' | 'n
 interface FloatingPanelProps {
   title: string;
   color: string;
+  headerCenter?: React.ReactNode;
   children: React.ReactNode;
 }
 
-export function FloatingPanel({ title, color, children }: FloatingPanelProps) {
+export function FloatingPanel({ title, color, headerCenter, children }: FloatingPanelProps) {
   const pos = useStore((s) => s.synthFloatPos);
   const size = useStore((s) => s.synthFloatSize);
   const minimized = useStore((s) => s.synthFloatMinimized);
@@ -41,35 +42,51 @@ export function FloatingPanel({ title, color, children }: FloatingPanelProps) {
         top: pos.y,
         width: size.w,
         height: minimized ? 36 : size.h,
-        zIndex: 9999,
+        zIndex: 30,
         display: 'flex',
         flexDirection: 'column',
         borderRadius: 8,
         overflow: 'hidden',
-        border: '1px solid #2a2a3e',
+        border: '1px solid rgba(255,255,255,0.06)',
         boxShadow: '0 8px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04)',
-        background: '#0c0c16',
+        background: '#0e0e14',
       }}
     >
-      {/* Title bar */}
+      {/* Title bar — glass gradient */}
       <div
         onMouseDown={onDragStart}
         onDoubleClick={() => setSynthFloatMinimized(!minimized)}
-        className="flex items-center justify-between px-3 shrink-0 select-none"
+        className="flex items-center px-3 shrink-0 select-none"
         style={{
           height: 36,
-          background: '#111122',
-          borderBottom: minimized ? 'none' : `1px solid ${color}30`,
+          background: 'linear-gradient(180deg, #16161e 0%, #12121a 100%)',
+          borderBottom: minimized ? 'none' : '1px solid rgba(255,255,255,0.04)',
+          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)',
           cursor: 'grab',
         }}
       >
-        <div className="flex items-center gap-2 min-w-0">
-          <div className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-          <span className="text-[11px] font-semibold uppercase tracking-wider truncate" style={{ color }}>
+        {/* Left: title + mode toggle */}
+        <div className="flex items-center gap-2 min-w-0 shrink-0">
+          <div className="w-2 h-2 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}60` }} />
+          <span
+            className="text-[11px] truncate"
+            style={{ color, letterSpacing: '0.15em', fontWeight: 500 }}
+          >
             {title}
           </span>
+          {/* Portal target for OSC/FM mode toggle */}
+          <div id="synth-float-header-mode" className="flex items-center gap-0.5 ml-1" />
         </div>
-        <div className="flex items-center gap-0.5 shrink-0">
+
+        {/* Center: preset browser slot (also portal target for SynthPanel) */}
+        <div id="synth-float-header-center" className="flex-1 flex justify-center items-center min-w-0 mx-4">
+          {headerCenter}
+        </div>
+
+        {/* Right: extra header buttons + window controls */}
+        <div className="flex items-center gap-1 shrink-0 ml-auto">
+          {/* Portal target for FX toggle etc. */}
+          <div id="synth-float-header-right" className="flex items-center gap-0.5" />
           {/* Minimize */}
           <button
             onClick={(e) => { e.stopPropagation(); setSynthFloatMinimized(!minimized); }}
@@ -100,7 +117,7 @@ export function FloatingPanel({ title, color, children }: FloatingPanelProps) {
 
       {/* Content */}
       {!minimized && (
-        <div className="flex-1 min-h-0 overflow-hidden">
+        <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
           {children}
         </div>
       )}

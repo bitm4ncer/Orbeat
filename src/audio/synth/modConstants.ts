@@ -20,6 +20,7 @@ export const MOD_PARAM_META: Partial<Record<keyof SynthParams, ParamMeta>> = {
   vcoPan:        { min: -1, max: 1,    label: 'Pan' },
   vcoDetune:     { min: -100, max: 100, label: 'Tune', unit: '¢', audioRate: true },
   wtPosition:    { min: 0, max: 1,     label: 'WT Pos' },
+  wtWarpAmount:  { min: 0, max: 1,     label: 'WT Warp' },
 
   // Filter
   filterFreq:    { min: 20, max: 20000, label: 'Cutoff', unit: 'Hz', audioRate: true },

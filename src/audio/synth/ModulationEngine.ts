@@ -177,109 +177,142 @@ export class ModulationEngine {
     return this.slots[slotIdx].smoothedValue;
   }
 
+  /** Get the current modulated value for a parameter (base + all LFO contributions). */
+  getModulatedValue(target: keyof SynthParams): number | null {
+    const meta = MOD_PARAM_META[target];
+    if (!meta) return null;
+
+    const params = this.getParams();
+    const baseVal = (params as Record<string, number>)[target] ?? 0;
+    let modAmount = 0;
+
+    for (const conn of this.connections) {
+      if (conn.target !== target) continue;
+      const slotIdx = parseInt(conn.source.slice(3)) - 1;
+      const slot = this.slots[slotIdx];
+      if (!slot) continue;
+      const range = meta.max - meta.min;
+      modAmount += slot.smoothedValue * conn.depth * range;
+    }
+
+    if (modAmount === 0) return null; // no active modulation
+    return Math.max(meta.min, Math.min(meta.max, baseVal + modAmount));
+  }
+
   // ── Polling loop (~60Hz) ───────────────────────────────────────────────
 
   private poll = (): void => {
     if (!this.running) return;
 
-    const now = performance.now();
-    const dt = Math.min((now - this.lastPollTime) / 1000, 0.1); // seconds, capped at 100ms
-    this.lastPollTime = now;
+    try {
+      const now = performance.now();
+      const dt = Math.min((now - this.lastPollTime) / 1000, 0.1); // seconds, capped at 100ms
+      this.lastPollTime = now;
 
-    const params = this.getParams();
-    const voicesActive = this.hasActiveVoices ? this.hasActiveVoices() : true;
+      const params = this.getParams();
+      const voicesActive = this.hasActiveVoices ? this.hasActiveVoices() : true;
 
-    // ── Advance each LFO slot ──────────────────────────────────────────
-    for (const slot of this.slots) {
-      const rate = slot.params.tempoSync
-        ? syncDivToHz(slot.params.syncDiv, this.bpm)
-        : slot.params.rate;
+      // ── Advance each LFO slot ──────────────────────────────────────────
+      for (const slot of this.slots) {
+        // Skip disabled LFOs — output zero
+        if (slot.params.enabled === false) {
+          slot.rawValue = 0;
+          slot.smoothedValue = 0;
+          continue;
+        }
 
-      if (slot.params.triggerMode === 'free') {
-        // Free: always running, wrap phase
-        slot.phase = (slot.phase + rate * dt) % 1;
-        slot.active = true;
-      } else if (slot.active && !slot.envDone) {
-        // Retrig / Envelope: advance if active
-        if (slot.delayRemaining > 0) {
-          slot.delayRemaining -= dt;
-        } else {
-          slot.phase += rate * dt;
+        const rate = slot.params.tempoSync
+          ? syncDivToHz(slot.params.syncDiv, this.bpm)
+          : slot.params.rate;
 
-          if (slot.params.triggerMode === 'envelope') {
-            // One-shot: stop at phase >= 1
-            if (slot.phase >= 1) {
-              slot.phase = 1;
-              slot.envDone = true;
-            }
+        if (slot.params.triggerMode === 'free') {
+          // Free: always running, wrap phase
+          slot.phase = (slot.phase + rate * dt) % 1;
+          slot.active = true;
+        } else if (slot.active && !slot.envDone) {
+          // Retrig / Envelope: advance if active
+          if (slot.delayRemaining > 0) {
+            slot.delayRemaining -= dt;
           } else {
-            // Retrig: wrap
-            slot.phase = slot.phase % 1;
+            slot.phase += rate * dt;
+
+            if (slot.params.triggerMode === 'envelope') {
+              // One-shot: stop at phase >= 1
+              if (slot.phase >= 1) {
+                slot.phase = 1;
+                slot.envDone = true;
+              }
+            } else {
+              // Retrig: wrap
+              slot.phase = slot.phase % 1;
+            }
           }
         }
-      }
 
-      // Deactivate retrig when voices go silent
-      if (slot.params.triggerMode === 'retrig' && !voicesActive) {
-        slot.active = false;
-      }
-
-      // Compute raw value
-      if (slot.active && !slot.envDone && slot.delayRemaining <= 0) {
-        if (slot.params.mode === 'stepseq' && slot.params.steps?.length) {
-          // Step sequencer: read from steps array based on phase
-          const numSteps = slot.params.steps.length;
-          const stepIdx = Math.min(Math.floor((slot.phase % 1) * numSteps), numSteps - 1);
-          slot.rawValue = slot.params.steps[stepIdx];
-        } else {
-          slot.rawValue = sampleLFOShape(slot.phase % 1, slot.params.shape);
+        // Deactivate retrig when voices go silent
+        if (slot.params.triggerMode === 'retrig' && !voicesActive) {
+          slot.active = false;
         }
-      } else if (slot.envDone) {
-        // Envelope done — fade to 0
-        slot.rawValue = slot.rawValue * 0.9; // quick decay
-        if (Math.abs(slot.rawValue) < 0.001) slot.rawValue = 0;
-      } else {
-        slot.rawValue = 0;
+
+        // Compute raw value
+        if (slot.active && !slot.envDone && slot.delayRemaining <= 0) {
+          if (slot.params.mode === 'stepseq' && slot.params.steps?.length) {
+            // Step sequencer: read from steps array based on phase
+            const numSteps = slot.params.steps.length;
+            const stepIdx = Math.min(Math.floor((slot.phase % 1) * numSteps), numSteps - 1);
+            slot.rawValue = slot.params.steps[stepIdx];
+          } else {
+            slot.rawValue = sampleLFOShape(slot.phase % 1, slot.params.shape);
+          }
+        } else if (slot.envDone) {
+          // Envelope done — fade to 0
+          slot.rawValue = slot.rawValue * 0.9; // quick decay
+          if (Math.abs(slot.rawValue) < 0.001) slot.rawValue = 0;
+        } else {
+          slot.rawValue = 0;
+        }
+
+        // Apply smoothing (exponential)
+        if (slot.params.smooth > 0.01) {
+          // smooth 0→1 maps to smoothFactor 1→0.02 (instant → very smooth)
+          const smoothFactor = 1 - slot.params.smooth * 0.98;
+          slot.smoothedValue += (slot.rawValue - slot.smoothedValue) * smoothFactor;
+        } else {
+          slot.smoothedValue = slot.rawValue;
+        }
       }
 
-      // Apply smoothing (exponential)
-      if (slot.params.smooth > 0.01) {
-        // smooth 0→1 maps to smoothFactor 1→0.02 (instant → very smooth)
-        const smoothFactor = 1 - slot.params.smooth * 0.98;
-        slot.smoothedValue += (slot.rawValue - slot.smoothedValue) * smoothFactor;
-      } else {
-        slot.smoothedValue = slot.rawValue;
+      // ── Apply modulation to targets ────────────────────────────────────
+      // Group connections by target to sum multiple LFOs on the same param
+      const targetMods = new Map<keyof SynthParams, number>();
+
+      for (const conn of this.connections) {
+        const slotIdx = parseInt(conn.source.slice(3)) - 1;
+        const slot = this.slots[slotIdx];
+        if (!slot) continue;
+
+        const meta = MOD_PARAM_META[conn.target];
+        if (!meta) continue;
+
+        const lfoVal = slot.smoothedValue;
+        const range = meta.max - meta.min;
+        const modAmount = lfoVal * conn.depth * range;
+
+        const existing = targetMods.get(conn.target) ?? 0;
+        targetMods.set(conn.target, existing + modAmount);
       }
-    }
 
-    // ── Apply modulation to targets ────────────────────────────────────
-    // Group connections by target to sum multiple LFOs on the same param
-    const targetMods = new Map<keyof SynthParams, number>();
+      // Apply summed modulations
+      for (const [target, modAmount] of targetMods) {
+        const meta = MOD_PARAM_META[target];
+        if (!meta) continue;
 
-    for (const conn of this.connections) {
-      const slotIdx = parseInt(conn.source.slice(3)) - 1;
-      const slot = this.slots[slotIdx];
-      if (!slot) continue;
-
-      const meta = MOD_PARAM_META[conn.target];
-      if (!meta) continue;
-
-      const lfoVal = slot.smoothedValue;
-      const range = meta.max - meta.min;
-      const modAmount = lfoVal * conn.depth * range;
-
-      const existing = targetMods.get(conn.target) ?? 0;
-      targetMods.set(conn.target, existing + modAmount);
-    }
-
-    // Apply summed modulations
-    for (const [target, modAmount] of targetMods) {
-      const meta = MOD_PARAM_META[target];
-      if (!meta) continue;
-
-      const baseVal = (params as Record<string, number>)[target] ?? 0;
-      const modded = Math.max(meta.min, Math.min(meta.max, baseVal + modAmount));
-      this.applyParamFn(target, modded);
+        const baseVal = (params as Record<string, number>)[target] ?? 0;
+        const modded = Math.max(meta.min, Math.min(meta.max, baseVal + modAmount));
+        this.applyParamFn(target, modded);
+      }
+    } catch (e) {
+      console.warn('[ModulationEngine] poll error:', e);
     }
 
     this.rafId = requestAnimationFrame(this.poll);

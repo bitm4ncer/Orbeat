@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { getMasterAnalyser } from '../../audio/routingEngine';
+import { useAnimationLoop } from '../../hooks/useAnimationLoop';
 
 const HOLD_FRAMES = 120;
 const DECAY_RATE = 0.003;
@@ -19,55 +20,60 @@ export function VUMeter() {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef({ level: 0, peakLevel: 0, peakHoldFrames: 0, clipFlashFrames: 0 });
-  const rafRef = useRef<number>(0);
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
+  const meterWRef = useRef(220);
+  const canvasWRef = useRef(220);
+  const gradientRef = useRef<CanvasGradient | null>(null);
+  const dataBufferRef = useRef<Float32Array | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
 
-    // Set canvas buffer to match its CSS display width
     const W = container.clientWidth || 220;
     canvas.width = W;
     canvas.height = CANVAS_H;
-    const meterW = W - CLIP_W; // usable meter width (excl. clip strip on right)
+    canvasWRef.current = W;
+    const meterW = W - CLIP_W;
+    meterWRef.current = meterW;
 
-    // Allocate once outside the draw loop — avoids 16 KB GC pressure every frame
-    let dataBuffer: Float32Array | null = null;
+    const ctx = canvas.getContext('2d');
+    ctxRef.current = ctx;
 
-    // Cache gradient — only depends on meterW which is constant for this effect lifecycle
-    const ctx0 = canvas.getContext('2d');
-    let meterGradient: CanvasGradient | null = null;
-    if (ctx0) {
-      meterGradient = ctx0.createLinearGradient(0, 0, meterW, 0);
-      meterGradient.addColorStop(0,    '#16a34a'); // dark green
-      meterGradient.addColorStop(0.55, '#22c55e'); // green
-      meterGradient.addColorStop(0.75, '#f59e0b'); // amber
-      meterGradient.addColorStop(0.88, '#f97316'); // orange
-      meterGradient.addColorStop(1.0,  '#ef4444'); // red
+    if (ctx) {
+      const gradient = ctx.createLinearGradient(0, 0, meterW, 0);
+      gradient.addColorStop(0,    '#16a34a');
+      gradient.addColorStop(0.55, '#22c55e');
+      gradient.addColorStop(0.75, '#f59e0b');
+      gradient.addColorStop(0.88, '#f97316');
+      gradient.addColorStop(1.0,  '#ef4444');
+      gradientRef.current = gradient;
     }
+  }, []);
 
-    const draw = () => {
+  useAnimationLoop(
+    () => {
       const analyser = getMasterAnalyser();
-      const ctx = canvas.getContext('2d');
-      if (!ctx) { rafRef.current = requestAnimationFrame(draw); return; }
+      const ctx = ctxRef.current;
+      const W = canvasWRef.current;
+      const meterW = meterWRef.current;
+      if (!ctx) return;
 
       const s = stateRef.current;
 
       if (!analyser) {
         ctx.fillStyle = '#0c0c14';
         ctx.fillRect(0, 0, W, CANVAS_H);
-        rafRef.current = requestAnimationFrame(draw);
         return;
       }
 
       // Re-allocate only if analyser fftSize changes (rare)
-      if (!dataBuffer || dataBuffer.length !== analyser.fftSize) {
-        dataBuffer = new Float32Array(analyser.fftSize);
+      if (!dataBufferRef.current || dataBufferRef.current.length !== analyser.fftSize) {
+        dataBufferRef.current = new Float32Array(analyser.fftSize);
       }
 
-      // --- Read level ---
-      const data = dataBuffer;
+      const data = dataBufferRef.current;
       analyser.getFloatTimeDomainData(data as Float32Array<ArrayBuffer>);
 
       let sum = 0;
@@ -106,8 +112,8 @@ export function VUMeter() {
 
       // Level bar (left → right)
       const barW = Math.round(s.level * meterW);
-      if (barW > 0 && meterGradient) {
-        ctx.fillStyle = meterGradient;
+      if (barW > 0 && gradientRef.current) {
+        ctx.fillStyle = gradientRef.current;
         ctx.fillRect(0, 1, barW, CANVAS_H - 2);
       }
 
@@ -130,13 +136,9 @@ export function VUMeter() {
       // Clip indicator strip (rightmost pixels)
       ctx.fillStyle = s.clipFlashFrames > 0 ? '#ef4444' : '#1e293b';
       ctx.fillRect(meterW, 0, CLIP_W, CANVAS_H);
-
-      rafRef.current = requestAnimationFrame(draw);
-    };
-
-    rafRef.current = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, []);
+    },
+    { targetFps: 30, visibilityRef: containerRef },
+  );
 
   return (
     <div ref={containerRef} className="w-full">

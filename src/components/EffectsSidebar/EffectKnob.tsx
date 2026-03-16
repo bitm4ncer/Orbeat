@@ -1,4 +1,4 @@
-import { useRef, useCallback, useState, useEffect } from 'react';
+import { useRef, useCallback, useState, useEffect, memo } from 'react';
 import { createPortal } from 'react-dom';
 
 const SIZE_MAP = { sm: 38, md: 50, lg: 64 } as const;
@@ -52,7 +52,7 @@ interface EffectKnobProps {
   value: number;
   min: number;
   max: number;
-  step: number;
+  step?: number;
   defaultValue?: number;
   label: string;
   color: string;
@@ -140,8 +140,8 @@ function KnobContextMenu({
 
 // ── Main knob component ─────────────────────────────────────────────────────
 
-export function EffectKnob({
-  value, min, max, step, defaultValue, label, color, unit, format,
+export const EffectKnob = memo(function EffectKnob({
+  value, min, max, step = 0.01, defaultValue, label, color, unit, format,
   size = 'md', onChange, modulations, contextItems, onLfoDrop, onModDepthChange,
 }: EffectKnobProps) {
   const px = SIZE_MAP[size];
@@ -151,7 +151,8 @@ export function EffectKnob({
   const bodyR  = px * 0.30;
   const dotR   = px * 0.05;
 
-  const t = Math.max(0, Math.min(1, (value - min) / (max - min)));
+  const safeValue = Number.isFinite(value) ? value : (defaultValue ?? min);
+  const t = Math.max(0, Math.min(1, (safeValue - min) / (max - min)));
   const valueDeg = START_DEG + t * RANGE_DEG;
 
   // Indicator dot position
@@ -165,6 +166,7 @@ export function EffectKnob({
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const dragRef = useRef<{ startY: number; startVal: number } | null>(null);
   const depthDragRef = useRef<{ startY: number; startDepth: number; idx: number } | null>(null);
+  const knobRef = useRef<HTMLDivElement>(null);
 
   const SENSITIVITY = 180; // px for full range
 
@@ -172,10 +174,11 @@ export function EffectKnob({
     // Don't start knob drag if a depth drag is in progress
     if (depthDragRef.current) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    dragRef.current = { startY: e.clientY, startVal: value };
+    const startVal = Number.isFinite(value) ? value : (defaultValue ?? min);
+    dragRef.current = { startY: e.clientY, startVal };
     setDragging(true);
     e.preventDefault();
-  }, [value]);
+  }, [value, defaultValue, min]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     // Depth ring drag
@@ -205,11 +208,23 @@ export function EffectKnob({
     onChange(defaultValue ?? min);
   }, [defaultValue, min, onChange]);
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    const dir = e.deltaY < 0 ? 1 : -1;
-    onChange(snapToStep(value + dir * step, step, min, max));
-  }, [value, min, max, step, onChange]);
+  // Native wheel handler registered with { passive: false } to allow preventDefault
+  const wheelPropsRef = useRef({ value, defaultValue, min, max, step, onChange });
+  wheelPropsRef.current = { value, defaultValue, min, max, step, onChange };
+
+  useEffect(() => {
+    const el = knobRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      const { value: v, defaultValue: dv, min: mn, max: mx, step: st, onChange: cb } = wheelPropsRef.current;
+      const dir = e.deltaY < 0 ? 1 : -1;
+      const base = Number.isFinite(v) ? v : (dv ?? mn);
+      cb(snapToStep(base + dir * st, st, mn, mx));
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+  }, []);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     if (!contextItems?.length) return;
@@ -252,7 +267,7 @@ export function EffectKnob({
     setDepthDragIdx(modIdx);
   }, [onModDepthChange]);
 
-  const displayVal = format ? format(value) : formatValue(value, step, unit);
+  const displayVal = format ? format(safeValue) : formatValue(safeValue, step, unit);
   const dimColor = `${color}40`; // 25% opacity for track
   const activeColor = color;
 
@@ -272,6 +287,7 @@ export function EffectKnob({
       style={{ width: px }}
     >
       <div
+        ref={knobRef}
         style={{
           width: px, height: px,
           cursor: depthDragIdx !== null ? 'ns-resize' : 'ns-resize',
@@ -283,7 +299,6 @@ export function EffectKnob({
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
         onDoubleClick={handleDoubleClick}
-        onWheel={handleWheel}
         onContextMenu={handleContextMenu}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -436,4 +451,4 @@ export function EffectKnob({
       )}
     </div>
   );
-}
+});

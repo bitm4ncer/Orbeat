@@ -56,12 +56,20 @@ export function startMidiRouting(
   unsubscribeNote = onMidiNote((mapping, velocity) => {
     const noteNumber = (mapping as any).note;
 
-    // Ensure audio context is started (needs user gesture — MIDI input counts)
+    // Ensure audio context is started and not suspended
     if (!audioReady) {
       ensureAudioReady().then((ok) => {
         if (ok) routeMidiNote(noteNumber, velocity);
       });
     } else {
+      // Context may have been suspended by browser — resume it
+      try {
+        const ctx = getAudioContext() as AudioContext;
+        if (ctx.state === 'suspended') {
+          ctx.resume().then(() => routeMidiNote(noteNumber, velocity));
+          return;
+        }
+      } catch { /* ignore */ }
       routeMidiNote(noteNumber, velocity);
     }
 

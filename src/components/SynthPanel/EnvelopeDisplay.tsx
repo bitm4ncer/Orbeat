@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 
-const H = 52;
+const DEFAULT_H = 52;
 
 interface EnvelopeDisplayProps {
   attack: number;   // 0–2s
@@ -8,9 +8,11 @@ interface EnvelopeDisplayProps {
   sustain: number;  // 0–1
   release: number;  // 0–2s
   color: string;
+  height?: number;
 }
 
-export function EnvelopeDisplay({ attack, decay, sustain, release, color }: EnvelopeDisplayProps) {
+export function EnvelopeDisplay({ attack, decay, sustain, release, color, height }: EnvelopeDisplayProps) {
+  const H = height ?? DEFAULT_H;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -60,28 +62,16 @@ export function EnvelopeDisplay({ attack, decay, sustain, release, color }: Enve
       const yBot  = H - 4;
       const ySus  = yTop + (1 - sustain) * (yBot - yTop);
 
-      // Draw envelope shape
+      // Draw envelope shape — single path for both fill and stroke
       ctx.beginPath();
       ctx.moveTo(x0, yBot);
       ctx.lineTo(x1, yTop);       // attack — rise to peak
       ctx.lineTo(x2, ySus);       // decay — fall to sustain
       ctx.lineTo(x3, ySus);       // sustain hold
       ctx.lineTo(x4, yBot);       // release — fall to 0
-
-      // Fill
-      ctx.lineTo(x4, yBot);
-      ctx.lineTo(x0, yBot);
       ctx.closePath();
       ctx.fillStyle = `${color}22`;
       ctx.fill();
-
-      // Stroke
-      ctx.beginPath();
-      ctx.moveTo(x0, yBot);
-      ctx.lineTo(x1, yTop);
-      ctx.lineTo(x2, ySus);
-      ctx.lineTo(x3, ySus);
-      ctx.lineTo(x4, yBot);
       ctx.strokeStyle = `${color}cc`;
       ctx.lineWidth = 1.5;
       ctx.lineJoin = 'round';
@@ -102,7 +92,7 @@ export function EnvelopeDisplay({ attack, decay, sustain, release, color }: Enve
     const ro = new ResizeObserver(() => render());
     ro.observe(container);
     return () => ro.disconnect();
-  }, [attack, decay, sustain, release, color]);
+  }, [attack, decay, sustain, release, color, H]);
 
   return (
     <div ref={containerRef} className="w-full rounded overflow-hidden" style={{ height: H }}>

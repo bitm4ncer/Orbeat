@@ -58,6 +58,46 @@ export async function getAudioInputDevices(): Promise<AudioInputDevice[]> {
   }
 }
 
+// ── Output device enumeration ─────────────────────────────────────────────────
+
+export interface AudioOutputDevice {
+  deviceId: string;
+  label: string;
+  groupId: string;
+}
+
+export async function getAudioOutputDevices(): Promise<AudioOutputDevice[]> {
+  if (!navigator.mediaDevices) return [];
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const outputs = devices.filter(d => d.kind === 'audiooutput');
+    return outputs.map(d => ({
+      deviceId: d.deviceId,
+      label: d.label || `Output ${d.deviceId.slice(0, 8)}`,
+      groupId: d.groupId,
+    }));
+  } catch (err) {
+    console.error('[AudioOutput] enumerateDevices failed:', err);
+    return [];
+  }
+}
+
+/** Switch the AudioContext output to a specific device. Returns null on success, error message on failure. */
+export async function setAudioOutputDevice(deviceId: string): Promise<string | null> {
+  try {
+    const ctx = getAudioContext() as AudioContext;
+    if (!('setSinkId' in ctx)) {
+      return 'Your browser does not support audio output device selection (setSinkId)';
+    }
+    await (ctx as any).setSinkId(deviceId);
+    console.log('[AudioOutput] Switched to device:', deviceId);
+    return null;
+  } catch (err: any) {
+    console.error('[AudioOutput] setSinkId failed:', err);
+    return err?.message ?? 'Failed to switch audio output device';
+  }
+}
+
 /** Request microphone permission — call this before enumerating to get labels */
 export async function requestMicPermission(): Promise<string | null> {
   if (!navigator.mediaDevices?.getUserMedia) {
