@@ -181,12 +181,14 @@ export function LooperEditor() {
     const sampleScale = baseScale / pitchRatio; // pitch up = shorter, pitch down = longer
 
     // ── Waveform rendering — simple unwarped at buffer positions ──
+    const isReversed = instrument.looperParams?.reverse ?? false;
     for (let i = 0; i < peaks.length; i++) {
-      const bufNorm = i / peaks.length; // position in buffer [0..1]
+      const peakIdx = isReversed ? peaks.length - 1 - i : i;
+      const bufNorm = i / peaks.length; // position in grid [0..1]
       const displayNorm = bufNorm * sampleScale; // scaled position in grid
       if (displayNorm < viewStart - 0.01 || displayNorm > viewEnd + 0.01) continue;
       const x = ((displayNorm - viewStart) / viewRange) * width;
-      const amp = peaks[i] * halfWave;
+      const amp = peaks[peakIdx] * halfWave;
       const outsideLoop = hasLoop && (displayNorm < loopIn || displayNorm > loopOut);
       if (outsideLoop) {
         ctx.fillStyle = `${color}22`;
@@ -482,9 +484,9 @@ export function LooperEditor() {
           onChange={(v) => updateLooperParams(selectedId, { release: v })} />
         <Knob label="Pan" value={lp.pan} min={-1} max={1} decimals={2} color={color} size={36}
           onChange={(v) => updateLooperParams(selectedId, { pan: v })} />
-        <Knob label="Cutoff" value={lp.cutoff} min={20} max={20000} step={10} decimals={0} unit="Hz" color={color} size={36}
+        <Knob label="Cutoff" value={lp.cutoff} min={20} max={20000} step={1} decimals={0} unit="Hz" color={color} size={36} log
           onChange={(v) => updateLooperParams(selectedId, { cutoff: v })} />
-        <Knob label="Res" value={lp.resonance} min={0} max={50} decimals={1} color={color} size={36}
+        <Knob label="Res" value={lp.resonance} min={0} max={20} decimals={1} color={color} size={36}
           onChange={(v) => updateLooperParams(selectedId, { resonance: v })} />
         <Knob label="Phase" value={lp.startOffset} min={0} max={1} decimals={2} color={color} size={36}
           onChange={(v) => updateLooperParams(selectedId, { startOffset: v })} />

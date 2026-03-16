@@ -1,11 +1,20 @@
 import { useCallback } from 'react';
 
-export function Knob({ label, value, min, max, step = 0.001, decimals = 2, unit = '', color, size = 36, onChange }: {
+export function Knob({ label, value, min, max, step = 0.001, decimals = 2, unit = '', color, size = 36, log = false, onChange }: {
   label: string; value: number; min: number; max: number;
   step?: number; decimals?: number; unit?: string; color: string; size?: number;
+  log?: boolean; // logarithmic scale (for frequency knobs)
   onChange: (v: number) => void;
 }) {
-  const norm = Math.max(0, Math.min(1, (value - min) / (max - min)));
+  // For log scale: map value to 0-1 using log, then back
+  const toNorm = log
+    ? (v: number) => Math.log(v / min) / Math.log(max / min)
+    : (v: number) => (v - min) / (max - min);
+  const fromNorm = log
+    ? (n: number) => min * Math.pow(max / min, n)
+    : (n: number) => min + n * (max - min);
+
+  const norm = Math.max(0, Math.min(1, toNorm(value)));
   const angleDeg = -135 + norm * 270;
   const angleRad = (angleDeg * Math.PI) / 180;
   const lineX = Math.sin(angleRad) * 0.62;
@@ -14,13 +23,14 @@ export function Knob({ label, value, min, max, step = 0.001, decimals = 2, unit 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startY = e.clientY;
-    const startValue = value;
-    const range = max - min;
+    const startNorm = toNorm(value);
     const onMove = (ev: MouseEvent) => {
       const dy = startY - ev.clientY;
-      const delta = (dy / 120) * range;
-      const raw = Math.max(min, Math.min(max, startValue + delta));
-      const snapped = Math.round(raw / step) * step;
+      const deltaNorm = dy / 120; // normalized 0-1 change
+      const newNorm = Math.max(0, Math.min(1, startNorm + deltaNorm));
+      const raw = fromNorm(newNorm);
+      const clamped = Math.max(min, Math.min(max, raw));
+      const snapped = Math.round(clamped / step) * step;
       onChange(parseFloat(snapped.toFixed(decimals)));
     };
     const onUp = () => {
@@ -29,7 +39,7 @@ export function Knob({ label, value, min, max, step = 0.001, decimals = 2, unit 
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
-  }, [value, min, max, step, decimals, onChange]);
+  }, [value, min, max, step, decimals, onChange, toNorm, fromNorm]);
 
   return (
     <div className="flex flex-col items-center gap-0.5 select-none">

@@ -89,6 +89,11 @@ export function LooperToolbar({ instrumentId, color }: LooperToolbarProps) {
 
       {/* Record audio input */}
       <RecordInputButton instrumentId={instrumentId} />
+
+      {/* Step count — right aligned */}
+      <span className="ml-auto text-[10px] font-mono text-text-secondary/50">
+        {instrument?.loopSize ?? 0} steps
+      </span>
     </div>
   );
 }

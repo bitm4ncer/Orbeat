@@ -2275,7 +2275,7 @@ export const useStore = create<StoreState>((set, get) => ({
       },
       instruments: s.instruments.map((i) =>
         i.id === instrumentId
-          ? { ...i, hits: 0, hitPositions: [], loopSize: fallbackLoopSize, detectedLoopSize: fallbackLoopSize, detectedBpm: cachedBpm || i.detectedBpm, stretchToSteps: true, looperParams: { ...(i.looperParams ?? DEFAULT_LOOPER_PARAMS), stretchToSteps: true } }
+          ? { ...i, hits: 0, hitPositions: [], loopSize: fallbackLoopSize, detectedLoopSize: fallbackLoopSize, detectedBpm: cachedBpm || i.detectedBpm, looperParams: { ...(i.looperParams ?? DEFAULT_LOOPER_PARAMS) } }
           : i
       ),
       gridNotes: {
