@@ -499,7 +499,7 @@ export function TrackTimeline() {
         )}
 
         {/* Arrangement blocks container */}
-        <div className="flex gap-2 p-2 min-w-min">
+        <div className={`flex gap-2 p-2 ${arrangement.length > 0 ? 'min-w-min' : 'h-full'}`}>
           {arrangement.length > 0 ? (
             arrangement.map((step, idx) => {
               const scene = scenes.find((s) => s.id === step.sceneId);

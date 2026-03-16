@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(npm install --save-dev @aws-sdk/client-s3)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(grep -n \"getSampleBufferSource\\\\|registerSound.*sample\" /c/GitHub/orbitrack/node_modules/superdough/*.mjs)",
+      "Bash(npx tsc:*)"
     ]
   }
 }

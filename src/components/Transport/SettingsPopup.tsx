@@ -835,6 +835,20 @@ export function SettingsPopup({ onClose }: { onClose: () => void }) {
                       <div className="flex justify-between"><span className="text-accent/80 font-mono">Shift + Click</span><span>Select multiple Orbs</span></div>
                       <div className="flex justify-between"><span className="text-accent/80 font-mono">Ctrl + G</span><span>Group Orbs to Scene</span></div>
                       <div className="flex justify-between"><span className="text-accent/80 font-mono">Shift + Ctrl + G</span><span>Ungroup</span></div>
+                      <div className="flex justify-between"><span className="text-accent/80 font-mono">Ctrl + Z</span><span>Undo</span></div>
+                      <div className="flex justify-between"><span className="text-accent/80 font-mono">Ctrl + Shift + Z</span><span>Redo</span></div>
+                      <div className="flex justify-between"><span className="text-accent/80 font-mono">Enter</span><span>Rename selected</span></div>
+                      <div className="flex justify-between"><span className="text-accent/80 font-mono">Delete / Backspace</span><span>Delete selected</span></div>
+                      <div className="flex justify-between"><span className="text-accent/80 font-mono">Ctrl + Shift + P</span><span>Toggle Performance Monitor</span></div>
+                    </div>
+                  </div>
+
+                  {/* Live Mode */}
+                  <div className="border-t border-border/30 pt-4">
+                    <h3 className="text-sm font-semibold text-text-primary mb-3">Live Mode</h3>
+                    <div className="space-y-1 text-xs">
+                      <div className="flex justify-between"><span className="text-accent/80 font-mono">1 – 9</span><span>Launch scene by index</span></div>
+                      <div className="flex justify-between"><span className="text-accent/80 font-mono">0 / Escape</span><span>Stop live scene</span></div>
                     </div>
                   </div>
 
