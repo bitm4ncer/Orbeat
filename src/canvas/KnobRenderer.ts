@@ -213,34 +213,77 @@ export class KnobRenderer {
       }
     }
 
-    // --- 5. Hit dots (rotate with ring) ---
+    // --- 5. Hit dots (rotate with ring) / Looper coverage dots ---
 
-    for (let i = 0; i < inst.hitPositions.length; i++) {
-      const hitPos = inst.hitPositions[i];
-      const hitAngle = TRIGGER_ANGLE - hitPos * TWO_PI - dotRotation;
-      const hx = cx + Math.cos(hitAngle) * radius;
-      const hy = cy + Math.sin(hitAngle) * radius;
+    if (inst.type === 'looper') {
+      // Looper: draw dots at each step, filled where sample covers
+      const ls = inst.loopSize;
+      const detectedLS = inst.detectedLoopSize || ls;
+      const pitchRatio = Math.pow(2, ((inst.looperParams?.pitchSemitones ?? 0) / 12));
+      const isStretched = inst.looperParams?.stretchToSteps ?? false;
+      const baseScale = isStretched ? 1 : detectedLS / ls;
+      const sampleScale = baseScale / pitchRatio;
+      const filledSteps = Math.min(ls, Math.max(0, Math.ceil(sampleScale * ls)));
 
-      const outsideLoop = hasLoopRegion && (hitPos < loopIn - 0.001 || hitPos > loopOut + 0.001);
+      const currentStep = Math.floor(instProg * ls) % ls;
 
-      const diff = Math.abs(instProg - hitPos);
-      const wrappedDiff = Math.min(diff, 1 - diff);
-      const isTriggered = state.isPlaying && !outsideLoop && wrappedDiff < (0.5 / inst.loopSize);
+      for (let g = 0; g < ls; g++) {
+        const stepPos = g / ls;
+        const stepAngle = TRIGGER_ANGLE - stepPos * TWO_PI - dotRotation;
+        const sx = cx + Math.cos(stepAngle) * radius;
+        const sy = cy + Math.sin(stepAngle) * radius;
+        const isFilled = g < filledSteps;
+        const isCurrentStep = state.isPlaying && !isMuted && g === currentStep;
 
-      ctx.beginPath();
-      ctx.arc(hx, hy, outsideLoop ? HIT_RADIUS * 0.6 : HIT_RADIUS, 0, TWO_PI);
-
-      if (isTriggered) {
-        ctx.fillStyle = '#ffffff';
-        ctx.fill();
-      } else {
-        ctx.fillStyle = rgba(inst.color, outsideLoop ? 0.15 : isMuted ? 0.25 : 0.9);
-        ctx.fill();
-        if (!outsideLoop) {
+        if (isCurrentStep && isFilled) {
           ctx.beginPath();
-          ctx.arc(hx, hy, HIT_RADIUS * 0.45, 0, TWO_PI);
-          ctx.fillStyle = rgba('#ffffff', isMuted ? 0.1 : 0.35);
+          ctx.arc(sx, sy, HIT_RADIUS, 0, TWO_PI);
+          ctx.fillStyle = '#ffffff';
           ctx.fill();
+        } else if (isFilled) {
+          ctx.beginPath();
+          ctx.arc(sx, sy, HIT_RADIUS * 0.75, 0, TWO_PI);
+          ctx.fillStyle = rgba(inst.color, isMuted ? 0.25 : 0.9);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(sx, sy, HIT_RADIUS * 0.35, 0, TWO_PI);
+          ctx.fillStyle = rgba('#ffffff', isMuted ? 0.1 : 0.3);
+          ctx.fill();
+        } else {
+          ctx.beginPath();
+          ctx.arc(sx, sy, 3, 0, TWO_PI);
+          ctx.fillStyle = 'rgba(255,255,255,0.07)';
+          ctx.fill();
+        }
+      }
+    } else {
+      for (let i = 0; i < inst.hitPositions.length; i++) {
+        const hitPos = inst.hitPositions[i];
+        const hitAngle = TRIGGER_ANGLE - hitPos * TWO_PI - dotRotation;
+        const hx = cx + Math.cos(hitAngle) * radius;
+        const hy = cy + Math.sin(hitAngle) * radius;
+
+        const outsideLoop = hasLoopRegion && (hitPos < loopIn - 0.001 || hitPos > loopOut + 0.001);
+
+        const diff = Math.abs(instProg - hitPos);
+        const wrappedDiff = Math.min(diff, 1 - diff);
+        const isTriggered = state.isPlaying && !outsideLoop && wrappedDiff < (0.5 / inst.loopSize);
+
+        ctx.beginPath();
+        ctx.arc(hx, hy, outsideLoop ? HIT_RADIUS * 0.6 : HIT_RADIUS, 0, TWO_PI);
+
+        if (isTriggered) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fill();
+        } else {
+          ctx.fillStyle = rgba(inst.color, outsideLoop ? 0.15 : isMuted ? 0.25 : 0.9);
+          ctx.fill();
+          if (!outsideLoop) {
+            ctx.beginPath();
+            ctx.arc(hx, hy, HIT_RADIUS * 0.45, 0, TWO_PI);
+            ctx.fillStyle = rgba('#ffffff', isMuted ? 0.1 : 0.35);
+            ctx.fill();
+          }
         }
       }
     }
@@ -255,13 +298,25 @@ export class KnobRenderer {
     ctx.lineWidth = 2;
     ctx.stroke();
 
-    // --- 7. Center text: hit count + loop size ---
+    // --- 7. Center text: hit count (or filled steps for loopers) + loop size ---
     const fontSize = Math.max(14, Math.floor(radius * 0.45));
+    let centerCount: number;
+    if (inst.type === 'looper') {
+      const ls = inst.loopSize;
+      const detectedLS = inst.detectedLoopSize || ls;
+      const pitchRatio = Math.pow(2, ((inst.looperParams?.pitchSemitones ?? 0) / 12));
+      const isStretched = inst.looperParams?.stretchToSteps ?? false;
+      const baseScale = isStretched ? 1 : detectedLS / ls;
+      const sampleScale = baseScale / pitchRatio;
+      centerCount = Math.min(ls, Math.max(0, Math.ceil(sampleScale * ls)));
+    } else {
+      centerCount = inst.hits;
+    }
     ctx.fillStyle = rgba(inst.color, isMuted ? 0.3 : 0.8);
     ctx.font = `bold ${fontSize}px monospace`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(inst.hits), cx, cy - fontSize * 0.25);
+    ctx.fillText(String(centerCount), cx, cy - fontSize * 0.25);
 
     ctx.fillStyle = 'rgba(255,255,255,0.25)';
     ctx.font = `${Math.floor(fontSize * 0.5)}px monospace`;
@@ -315,36 +370,49 @@ export class KnobRenderer {
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // Build hit step set (cached)
-    if (inst.hitPositions !== this._ledHitRef) {
-      this._ledHitRef = inst.hitPositions;
-      this._ledHitSteps.clear();
-      for (const hp of inst.hitPositions) {
-        this._ledHitSteps.add(Math.round(hp * inst.loopSize) % inst.loopSize);
-      }
-    }
-
     // LED dots — one per step, 3 passes: empty, active, triggered
     const loopSize = inst.loopSize;
     const stepsPerBeat = Math.round(loopSize / 4);
+
+    // Determine which steps are active
+    let isStepActive: (g: number) => boolean;
+    if (inst.type === 'looper') {
+      const detectedLS = inst.detectedLoopSize || loopSize;
+      const pitchRatio = Math.pow(2, ((inst.looperParams?.pitchSemitones ?? 0) / 12));
+      const isStretched = inst.looperParams?.stretchToSteps ?? false;
+      const baseScale = isStretched ? 1 : detectedLS / loopSize;
+      const sampleScale = baseScale / pitchRatio;
+      const filledSteps = Math.min(loopSize, Math.max(0, Math.ceil(sampleScale * loopSize)));
+      isStepActive = (g) => g < filledSteps;
+    } else {
+      // Build hit step set (cached)
+      if (inst.hitPositions !== this._ledHitRef) {
+        this._ledHitRef = inst.hitPositions;
+        this._ledHitSteps.clear();
+        for (const hp of inst.hitPositions) {
+          this._ledHitSteps.add(Math.round(hp * loopSize) % loopSize);
+        }
+      }
+      isStepActive = (g) => this._ledHitSteps.has(g);
+    }
 
     // Pass 1: empty steps (dim dots)
     ctx.fillStyle = 'rgba(255,255,255,0.06)';
     ctx.beginPath();
     for (let g = 0; g < loopSize; g++) {
-      if (this._ledHitSteps.has(g)) continue;
+      if (isStepActive(g)) continue;
       const angle = TRIGGER_ANGLE - (g / loopSize) * TWO_PI;
       ctx.moveTo(cx + Math.cos(angle) * radius + 2.5, cy + Math.sin(angle) * radius);
       ctx.arc(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius, 2.5, 0, TWO_PI);
     }
     ctx.fill();
 
-    // Pass 2: active hits (colored dots)
+    // Pass 2: active steps (colored dots)
     const activeColor = rgba(inst.color, isMuted ? 0.3 : 0.85);
     ctx.fillStyle = activeColor;
     ctx.beginPath();
     for (let g = 0; g < loopSize; g++) {
-      if (!this._ledHitSteps.has(g)) continue;
+      if (!isStepActive(g)) continue;
       if (state.isPlaying && g === currentStep) continue; // skip triggered — drawn in pass 3
       const angle = TRIGGER_ANGLE - (g / loopSize) * TWO_PI;
       const x = cx + Math.cos(angle) * radius;
@@ -355,7 +423,7 @@ export class KnobRenderer {
     ctx.fill();
 
     // Pass 3: triggered step (white)
-    if (state.isPlaying && this._ledHitSteps.has(currentStep)) {
+    if (state.isPlaying && isStepActive(currentStep)) {
       const angle = TRIGGER_ANGLE - (currentStep / loopSize) * TWO_PI;
       const x = cx + Math.cos(angle) * radius;
       const y = cy + Math.sin(angle) * radius;
@@ -391,11 +459,22 @@ export class KnobRenderer {
 
     // Center text
     const fontSize = Math.max(14, Math.floor(radius * 0.45));
+    let centerCount: number;
+    if (inst.type === 'looper') {
+      const detectedLS = inst.detectedLoopSize || loopSize;
+      const pitchRatio = Math.pow(2, ((inst.looperParams?.pitchSemitones ?? 0) / 12));
+      const isStretched = inst.looperParams?.stretchToSteps ?? false;
+      const baseScale = isStretched ? 1 : detectedLS / loopSize;
+      const sampleScale = baseScale / pitchRatio;
+      centerCount = Math.min(loopSize, Math.max(0, Math.ceil(sampleScale * loopSize)));
+    } else {
+      centerCount = inst.hits;
+    }
     ctx.fillStyle = rgba(inst.color, isMuted ? 0.3 : 0.8);
     ctx.font = `bold ${fontSize}px monospace`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(inst.hits), cx, cy - fontSize * 0.25);
+    ctx.fillText(String(centerCount), cx, cy - fontSize * 0.25);
 
     ctx.fillStyle = 'rgba(255,255,255,0.25)';
     ctx.font = `${Math.floor(fontSize * 0.5)}px monospace`;
@@ -435,16 +514,29 @@ export class KnobRenderer {
       ? (totalSteps % inst.loopSize) / inst.loopSize : 0;
     const currentStep = Math.floor(instProg * inst.loopSize) % inst.loopSize;
 
-    // Build hit step set (cached)
-    if (inst.hitPositions !== this._ledHitRef) {
-      this._ledHitRef = inst.hitPositions;
-      this._ledHitSteps.clear();
-      for (const hp of inst.hitPositions) {
-        this._ledHitSteps.add(Math.round(hp * inst.loopSize) % inst.loopSize);
-      }
-    }
-
     const loopSize = inst.loopSize;
+
+    // Determine active steps (looper: sample coverage, others: hit positions)
+    let isStepActive: (g: number) => boolean;
+    if (inst.type === 'looper') {
+      const detectedLS = inst.detectedLoopSize || loopSize;
+      const pitchRatio = Math.pow(2, ((inst.looperParams?.pitchSemitones ?? 0) / 12));
+      const isStretched = inst.looperParams?.stretchToSteps ?? false;
+      const baseScale = isStretched ? 1 : detectedLS / loopSize;
+      const sampleScale = baseScale / pitchRatio;
+      const filledSteps = Math.min(loopSize, Math.max(0, Math.ceil(sampleScale * loopSize)));
+      isStepActive = (g) => g < filledSteps;
+    } else {
+      // Build hit step set (cached)
+      if (inst.hitPositions !== this._ledHitRef) {
+        this._ledHitRef = inst.hitPositions;
+        this._ledHitSteps.clear();
+        for (const hp of inst.hitPositions) {
+          this._ledHitSteps.add(Math.round(hp * loopSize) % loopSize);
+        }
+      }
+      isStepActive = (g) => this._ledHitSteps.has(g);
+    }
 
     // Background
     const bgRadius = Math.min(cx, cy) - 2;
@@ -460,15 +552,16 @@ export class KnobRenderer {
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // Rotated hit set: shift hit positions by currentStep
-    // A hit at original step `s` appears at display step `(s - currentStep + loopSize) % loopSize`
+    // Rotated active set: shift positions by currentStep
     const rotatedHits = new Set<number>();
-    for (const s of this._ledHitSteps) {
-      rotatedHits.add((s - currentStep + loopSize) % loopSize);
+    for (let g = 0; g < loopSize; g++) {
+      if (isStepActive(g)) {
+        rotatedHits.add((g - currentStep + loopSize) % loopSize);
+      }
     }
 
     // The step at the indicator (bottom) that is currently being triggered
-    const triggerDisplayStep = 0; // step 0 is at the indicator (TRIGGER_ANGLE)
+    const triggerDisplayStep = 0;
     const isTriggerHit = state.isPlaying && rotatedHits.has(triggerDisplayStep);
 
     // Pass 1: empty steps (dim dots) — fixed positions
@@ -484,7 +577,7 @@ export class KnobRenderer {
     }
     ctx.fill();
 
-    // Pass 2: active hits (colored dots) — skip the one at trigger position
+    // Pass 2: active dots (colored) — skip the one at trigger position
     ctx.fillStyle = rgba(inst.color, isMuted ? 0.3 : 0.85);
     ctx.beginPath();
     for (let g = 0; g < loopSize; g++) {
@@ -535,11 +628,22 @@ export class KnobRenderer {
 
     // Center text
     const fontSize = Math.max(14, Math.floor(radius * 0.45));
+    let centerCount: number;
+    if (inst.type === 'looper') {
+      const detectedLS = inst.detectedLoopSize || loopSize;
+      const pitchRatio = Math.pow(2, ((inst.looperParams?.pitchSemitones ?? 0) / 12));
+      const isStretched = inst.looperParams?.stretchToSteps ?? false;
+      const baseScale = isStretched ? 1 : detectedLS / loopSize;
+      const sampleScale = baseScale / pitchRatio;
+      centerCount = Math.min(loopSize, Math.max(0, Math.ceil(sampleScale * loopSize)));
+    } else {
+      centerCount = inst.hits;
+    }
     ctx.fillStyle = rgba(inst.color, isMuted ? 0.3 : 0.8);
     ctx.font = `bold ${fontSize}px monospace`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(inst.hits), cx, cy - fontSize * 0.25);
+    ctx.fillText(String(centerCount), cx, cy - fontSize * 0.25);
 
     ctx.fillStyle = 'rgba(255,255,255,0.25)';
     ctx.font = `${Math.floor(fontSize * 0.5)}px monospace`;
@@ -575,23 +679,40 @@ export class KnobRenderer {
       ? (totalSteps % inst.loopSize) / inst.loopSize : 0;
     const currentStep = Math.floor(instProg * inst.loopSize) % inst.loopSize;
 
-    // Build hit step set (cached)
-    const hitsChanged = inst.hitPositions !== this._ledHitRef;
-    if (hitsChanged) {
-      this._ledHitRef = inst.hitPositions;
-      this._ledHitSteps.clear();
-      for (const hp of inst.hitPositions) {
-        this._ledHitSteps.add(Math.round(hp * inst.loopSize) % inst.loopSize);
-      }
-    }
-
     const loopSize = inst.loopSize;
 
-    // Rotated hit set: reuse cached set, only rebuild when step or hits change
+    // Determine which steps are active (looper: sample coverage, others: hit positions)
+    let isStepActive: (g: number) => boolean;
+    let hitsChanged: boolean;
+    if (inst.type === 'looper') {
+      const detectedLS = inst.detectedLoopSize || loopSize;
+      const pitchRatio = Math.pow(2, ((inst.looperParams?.pitchSemitones ?? 0) / 12));
+      const isStretched = inst.looperParams?.stretchToSteps ?? false;
+      const baseScale = isStretched ? 1 : detectedLS / loopSize;
+      const sampleScale = baseScale / pitchRatio;
+      const filledSteps = Math.min(loopSize, Math.max(0, Math.ceil(sampleScale * loopSize)));
+      isStepActive = (g) => g < filledSteps;
+      hitsChanged = true; // always rebuild rotated set for loopers (filledSteps may change)
+    } else {
+      // Build hit step set (cached)
+      hitsChanged = inst.hitPositions !== this._ledHitRef;
+      if (hitsChanged) {
+        this._ledHitRef = inst.hitPositions;
+        this._ledHitSteps.clear();
+        for (const hp of inst.hitPositions) {
+          this._ledHitSteps.add(Math.round(hp * loopSize) % loopSize);
+        }
+      }
+      isStepActive = (g) => this._ledHitSteps.has(g);
+    }
+
+    // Rotated active set: reuse cached set, only rebuild when step or hits change
     if (currentStep !== this._chaseLastStep || hitsChanged) {
       this._chaseRotated.clear();
-      for (const s of this._ledHitSteps) {
-        this._chaseRotated.add((s - currentStep + loopSize) % loopSize);
+      for (let g = 0; g < loopSize; g++) {
+        if (isStepActive(g)) {
+          this._chaseRotated.add((g - currentStep + loopSize) % loopSize);
+        }
       }
       this._chaseLastStep = currentStep;
     }
@@ -605,7 +726,7 @@ export class KnobRenderer {
     const hitDotR = baseDotR * 1.35;
     const triggerDotR = baseDotR * 1.55;
 
-    // Pass 1: non-hit dots (visible gray)
+    // Pass 1: non-active dots (visible gray)
     ctx.fillStyle = 'rgba(180,180,190,0.35)';
     ctx.beginPath();
     for (let g = 0; g < loopSize; g++) {
@@ -618,7 +739,7 @@ export class KnobRenderer {
     }
     ctx.fill();
 
-    // Pass 2: hit dots (instrument color)
+    // Pass 2: active dots (instrument color)
     ctx.fillStyle = rgba(inst.color, isMuted ? 0.35 : 0.9);
     ctx.beginPath();
     for (let g = 0; g < loopSize; g++) {
@@ -652,13 +773,24 @@ export class KnobRenderer {
     ctx.lineWidth = 2;
     ctx.stroke();
 
-    // Center text: hits
+    // Center text: filled steps (looper) or hits
     const fontSize = Math.max(14, Math.floor(radius * 0.45));
+    let centerCount: number;
+    if (inst.type === 'looper') {
+      const detectedLS = inst.detectedLoopSize || loopSize;
+      const pitchRatio = Math.pow(2, ((inst.looperParams?.pitchSemitones ?? 0) / 12));
+      const isStretched = inst.looperParams?.stretchToSteps ?? false;
+      const baseScale = isStretched ? 1 : detectedLS / loopSize;
+      const sampleScale = baseScale / pitchRatio;
+      centerCount = Math.min(loopSize, Math.max(0, Math.ceil(sampleScale * loopSize)));
+    } else {
+      centerCount = inst.hits;
+    }
     ctx.fillStyle = rgba(inst.color, isMuted ? 0.3 : 0.8);
     ctx.font = `bold ${fontSize}px monospace`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(inst.hits), cx, cy - fontSize * 0.25);
+    ctx.fillText(String(centerCount), cx, cy - fontSize * 0.25);
 
     ctx.fillStyle = 'rgba(255,255,255,0.25)';
     ctx.font = `${Math.floor(fontSize * 0.5)}px monospace`;

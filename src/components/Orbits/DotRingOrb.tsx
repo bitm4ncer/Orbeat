@@ -128,7 +128,7 @@ export function DotRingOrb({ instrumentId, size }: Props) {
       // ── Looper: dot ring (sample coverage) + rotation arc ──
       if (inst.type === 'looper') {
         // Compute how many steps the sample covers
-        const detectedLS = inst.detectedLoopSize ?? ls;
+        const detectedLS = inst.detectedLoopSize || ls;
         const pitchRatio = Math.pow(2, ((inst.looperParams?.pitchSemitones ?? 0) / 12));
         const isStretched = inst.looperParams?.stretchToSteps ?? false;
         const baseScale = isStretched ? 1 : detectedLS / ls;
@@ -206,19 +206,18 @@ export function DotRingOrb({ instrumentId, size }: Props) {
         ctx.lineCap = 'round';
         ctx.stroke();
 
-        // Center text: instrument name
-        const displayName = inst.name.length > 8 ? inst.name.slice(0, 8) : inst.name;
+        // Center text: filledSteps (large)
         ctx.fillStyle = `rgba(${cr},${cg},${cb},0.8)`;
-        ctx.font = `bold ${Math.floor(fontSize * 0.55)}px monospace`;
+        ctx.font = `bold ${fontSize}px monospace`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(displayName, cx, cy - fontSize * 0.15);
+        ctx.fillText(String(filledSteps), cx, cy - fontSize * 0.15);
 
-        // Center text: loopSize
-        const smallFont = Math.floor(fontSize * 0.45);
+        // Center text: /loopSize
+        const smallFont = Math.floor(fontSize * 0.5);
         ctx.fillStyle = 'rgba(255,255,255,0.25)';
         ctx.font = `${smallFont}px monospace`;
-        ctx.fillText(`${inst.loopSize} steps`, cx, cy + fontSize * 0.6);
+        ctx.fillText(`/${inst.loopSize}`, cx, cy + fontSize * 0.7);
 
       } else {
         // ── Synth/Sampler: dot ring (original behavior) ──
