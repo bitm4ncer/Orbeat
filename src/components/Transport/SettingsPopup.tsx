@@ -60,10 +60,14 @@ function AudioOutputSection() {
   const [devices, setDevices] = useState<AudioOutputDevice[]>([]);
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [needsPermission, setNeedsPermission] = useState(false);
 
-  const refreshDevices = useCallback(async () => {
-    const d = await getAudioOutputDevices();
+  const refreshDevices = useCallback(async (requestPermission = false) => {
+    const d = await getAudioOutputDevices(requestPermission);
     setDevices(d);
+    // Check if we got real labels or just generic fallbacks
+    const hasLabels = d.some(dev => dev.label && !dev.label.startsWith('Output '));
+    setNeedsPermission(!hasLabels && d.length <= 1);
   }, []);
 
   useEffect(() => {
@@ -113,10 +117,23 @@ function AudioOutputSection() {
           </option>
         ))}
       </select>
+      {needsPermission && (
+        <button
+          onClick={() => refreshDevices(true)}
+          className="w-full px-3 py-1.5 text-xs bg-accent/20 border border-accent/40 rounded text-accent hover:bg-accent/30 transition-colors"
+        >
+          Detect Audio Devices
+        </button>
+      )}
+      {needsPermission && (
+        <p className="text-[10px] text-text-secondary/50">
+          Browser requires permission to list audio devices. Click above — a popup will ask you to allow microphone access.
+        </p>
+      )}
       {error && (
         <p className="text-xs text-red-400 mt-1">{error}</p>
       )}
-      {devices.length === 0 && (
+      {!needsPermission && devices.length === 0 && (
         <p className="text-[10px] text-text-secondary/50 mt-1">
           No output devices detected. Your browser may not support output device enumeration.
         </p>

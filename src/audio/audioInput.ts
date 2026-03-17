@@ -66,9 +66,24 @@ export interface AudioOutputDevice {
   groupId: string;
 }
 
-export async function getAudioOutputDevices(): Promise<AudioOutputDevice[]> {
+export async function getAudioOutputDevices(requestPermission = false): Promise<AudioOutputDevice[]> {
   if (!navigator.mediaDevices) return [];
   try {
+    // On HTTPS, browsers hide device labels until a media permission is granted.
+    // Check if we already have permission; if not and requested, ask for it.
+    let hasPermission = false;
+    if (navigator.permissions) {
+      try {
+        const status = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+        hasPermission = status.state === 'granted';
+      } catch { /* permissions API may not support 'microphone' query */ }
+    }
+
+    if (!hasPermission && requestPermission) {
+      const err = await requestMicPermission();
+      if (!err) hasPermission = true;
+    }
+
     const devices = await navigator.mediaDevices.enumerateDevices();
     const outputs = devices.filter(d => d.kind === 'audiooutput');
     return outputs.map(d => ({
