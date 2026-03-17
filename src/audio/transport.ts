@@ -1,4 +1,5 @@
 import * as Tone from 'tone';
+import { getAudioContext, getSuperdoughAudioController } from 'superdough';
 import { useStore } from '../state/store';
 import { triggerSuperdough, triggerLooperContinuous } from './superdoughAdapter';
 import { applyOrbitToneEffects } from './orbitEffects';
@@ -202,8 +203,22 @@ function stopEffectSync(): void {
   }
 }
 
+/** Instantly silence all audio by destroying orbit nodes.
+ *  Old sources lose their output path. superdough recreates orbits on next trigger. */
+function silenceAll(): void {
+  try {
+    const controller = getSuperdoughAudioController() as any;
+    const nodes = controller.nodes ?? {};
+    for (const [key, orbit] of Object.entries(nodes)) {
+      try { (orbit as any).disconnect(); } catch { /* ok */ }
+    }
+    controller.nodes = {};
+  } catch { /* graceful fallback */ }
+}
+
 export function stopTransport(): void {
   const transport = Tone.getTransport();
+  silenceAll();
   stopUISync();
   stopEffectSync();
   transport.stop();

@@ -2224,7 +2224,8 @@ export const useStore = create<StoreState>((set, get) => ({
 
     // Decode audio and init editor — reuse Tone.js AudioContext
     const ctx = Tone.getContext().rawContext as AudioContext;
-    fetch(url)
+    (ctx.state === 'suspended' ? ctx.resume() : Promise.resolve())
+      .then(() => fetch(url))
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status} for ${loopPath}`);
         return r.arrayBuffer();
@@ -2529,7 +2530,8 @@ export const useStore = create<StoreState>((set, get) => ({
           // Use native AudioContext (not the standardized-audio-context polyfill)
           const rawCtx = Tone.getContext().rawContext as unknown as { _nativeContext?: AudioContext };
           const ctx = rawCtx._nativeContext ?? (Tone.getContext().rawContext as unknown as AudioContext);
-          fetch(url)
+          (ctx.state === 'suspended' ? ctx.resume() : Promise.resolve())
+            .then(() => fetch(url))
             .then((r) => {
               if (!r.ok) throw new Error(`fetch failed: ${r.status} ${r.statusText} for ${url}`);
               const ct = r.headers.get('content-type') ?? '';
