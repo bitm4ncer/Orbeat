@@ -125,53 +125,82 @@ export function DotRingOrb({ instrumentId, size }: Props) {
       // ── Clear ──
       ctx.clearRect(0, 0, size, size);
 
-      // ── Looper: rotation gradient arc ──
+      // ── Looper: dot ring (sample coverage) + rotation arc ──
       if (inst.type === 'looper') {
-        // Faint full ring
+        // Compute how many steps the sample covers
+        const detectedLS = inst.detectedLoopSize ?? ls;
+        const pitchRatio = Math.pow(2, ((inst.looperParams?.pitchSemitones ?? 0) / 12));
+        const isStretched = inst.looperParams?.stretchToSteps ?? false;
+        const baseScale = isStretched ? 1 : detectedLS / ls;
+        const sampleScale = baseScale / pitchRatio;
+        const filledSteps = Math.min(ls, Math.max(0, Math.ceil(sampleScale * ls)));
+
+        // Faint ring stroke
         ctx.beginPath();
         ctx.arc(cx, cy, radius, 0, TWO_PI);
         ctx.strokeStyle = `rgba(${cr},${cg},${cb},0.15)`;
-        ctx.lineWidth = 4;
+        ctx.lineWidth = 1;
         ctx.stroke();
 
-        // Progress arc with conic gradient
-        if (state.isPlaying && !effectivelyMuted && instProg > 0) {
-          const startAngle = -Math.PI / 2; // 12 o'clock
-          const endAngle = startAngle + instProg * TWO_PI;
+        // Dot ring — filled where sample is present, dim where empty
+        const xy = dotXYRef.current;
+        const activeAlpha = isMuted ? 0.35 : 0.9;
+        for (let g = 0; g < ls; g++) {
+          const isFilled = g < filledSteps;
+          const isCurrentStep = state.isPlaying && !effectivelyMuted && g === currentStep;
 
-          // Draw gradient arc using multiple segments for smooth color fade
+          let dotR: number;
+          let fillStyle: string;
+
+          if (isCurrentStep && isFilled) {
+            dotR = 6;
+            fillStyle = '#ffffff';
+          } else if (isFilled) {
+            dotR = 4.5;
+            fillStyle = `rgba(${cr},${cg},${cb},${activeAlpha})`;
+          } else {
+            dotR = 2.5;
+            fillStyle = 'rgba(255,255,255,0.07)';
+          }
+
+          ctx.beginPath();
+          ctx.arc(xy[g * 2], xy[g * 2 + 1], dotR, 0, TWO_PI);
+          ctx.fillStyle = fillStyle;
+          ctx.fill();
+        }
+
+        // Progress arc overlay during playback
+        if (state.isPlaying && !effectivelyMuted && instProg > 0) {
+          const startAngle = Math.PI / 2; // 6 o'clock (step 0)
+          const endAngle = startAngle - instProg * TWO_PI; // counter-clockwise to match dot order
+
+          // Gradient arc (counter-clockwise)
           const segments = Math.max(8, Math.ceil(instProg * 60));
           const alpha = isMuted ? 0.3 : 0.85;
           for (let s = 0; s < segments; s++) {
-            const t0 = s / segments;
             const t1 = (s + 1) / segments;
-            const a0 = startAngle + t0 * instProg * TWO_PI;
-            const a1 = startAngle + t1 * instProg * TWO_PI;
-            const segAlpha = (t0 * 0.1 + (1 - t0) * 0.02) * alpha; // fade from dim to bright
+            const a0 = startAngle - (s / segments) * instProg * TWO_PI;
+            const a1 = startAngle - t1 * instProg * TWO_PI;
             ctx.beginPath();
-            ctx.arc(cx, cy, radius, a0, a1);
+            ctx.arc(cx, cy, radius, a0, a1, true);
             ctx.strokeStyle = `rgba(${cr},${cg},${cb},${(t1 * alpha).toFixed(2)})`;
             ctx.lineWidth = 4;
             ctx.stroke();
           }
 
-          // Bright dot at current position
-          const headAngle = endAngle;
-          const hx = cx + Math.cos(headAngle) * radius;
-          const hy = cy + Math.sin(headAngle) * radius;
+          // Playhead dot
+          const hx = cx + Math.cos(endAngle) * radius;
+          const hy = cy + Math.sin(endAngle) * radius;
           ctx.beginPath();
           ctx.arc(hx, hy, 5, 0, TWO_PI);
           ctx.fillStyle = isMuted ? `rgba(${cr},${cg},${cb},0.4)` : '#ffffff';
           ctx.fill();
         }
 
-        // Indicator line at top (12 o'clock — start position)
-        const indAngle = -Math.PI / 2;
-        const indX = cx + Math.cos(indAngle) * radius;
-        const indY1 = indX === cx ? cy - radius - 6 : cy + Math.sin(indAngle) * radius - 6;
+        // Indicator line at bottom (6 o'clock — step 0)
         ctx.beginPath();
-        ctx.moveTo(cx, cy - radius - 6);
-        ctx.lineTo(cx, cy - radius - 18);
+        ctx.moveTo(cx, cy + radius + 6);
+        ctx.lineTo(cx, cy + radius + 14);
         ctx.strokeStyle = 'rgba(255,255,255,0.75)';
         ctx.lineWidth = 2;
         ctx.lineCap = 'round';

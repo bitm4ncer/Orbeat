@@ -432,7 +432,7 @@ export function KnobCanvas({ instrumentId, isResizing }: Props) {
       } else if (e.altKey) {
         const newVol = Math.max(-20, Math.min(20, inst.volume + delta));
         store.updateInstrument(instrumentId, { volume: newVol });
-      } else {
+      } else if (inst.type !== 'looper') {
         const newHits = Math.max(0, Math.min(inst.loopSize, inst.hits + delta));
         store.setHitCount(instrumentId, newHits);
       }

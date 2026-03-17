@@ -472,8 +472,6 @@ export function LooperEditor() {
       </div>
       {/* Knob bar */}
       <div className="flex items-center justify-around px-4 py-2 border-t border-border/50 shrink-0 bg-bg-secondary">
-        <Knob label="Loop Steps" value={instrument.loopSize} min={1} max={64} step={1} decimals={0} color={color} size={52}
-          onChange={(v) => setLoopSize(selectedId, v)} />
         <Knob label="Vol" value={lp.gain} min={0} max={1} decimals={2} color={color} size={36}
           onChange={(v) => updateLooperParams(selectedId, { gain: v })} />
         <Knob label="Pitch" value={lp.pitchSemitones} min={-24} max={24} step={1} decimals={0} unit="st" color={color} size={36}
@@ -490,6 +488,8 @@ export function LooperEditor() {
           onChange={(v) => updateLooperParams(selectedId, { resonance: v })} />
         <Knob label="Phase" value={lp.startOffset} min={0} max={1} decimals={2} color={color} size={36}
           onChange={(v) => updateLooperParams(selectedId, { startOffset: v })} />
+        <Knob label="Loop Steps" value={instrument.loopSize} min={1} max={64} step={1} decimals={0} color={color} size={52}
+          onChange={(v) => setLoopSize(selectedId, v)} />
       </div>
     </div>
   );
