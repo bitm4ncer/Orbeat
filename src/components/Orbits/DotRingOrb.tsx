@@ -84,6 +84,9 @@ export function DotRingOrb({ instrumentId, size }: Props) {
   const prevMutedRef = useRef(false);
   const prevPlayingRef = useRef(false);
   const prevHitsRef = useRef(-1);
+  // Looper-specific skip state
+  const prevFilledStepsRef = useRef(-1);
+  const prevInstProgQuantRef = useRef(-1);
 
   // Init canvas context
   useEffect(() => {
@@ -122,9 +125,6 @@ export function DotRingOrb({ instrumentId, size }: Props) {
       const currentStep = Math.floor(instProg * ls) % ls;
       const isMuted = inst.muted;
 
-      // ── Clear ──
-      ctx.clearRect(0, 0, size, size);
-
       // ── Looper: dot ring (sample coverage) + rotation arc ──
       if (inst.type === 'looper') {
         // Compute how many steps the sample covers
@@ -134,6 +134,26 @@ export function DotRingOrb({ instrumentId, size }: Props) {
         const baseScale = isStretched ? 1 : detectedLS / ls;
         const sampleScale = baseScale / pitchRatio;
         const filledSteps = Math.min(ls, Math.max(0, Math.ceil(sampleScale * ls)));
+
+        // Skip redraw when nothing visible changed
+        // Quantize instProg to sub-step resolution to avoid needless redraws
+        const progQuant = Math.round(instProg * ls * 2);
+        if (
+          currentStep === prevStepRef.current &&
+          isMuted === prevMutedRef.current &&
+          state.isPlaying === prevPlayingRef.current &&
+          filledSteps === prevFilledStepsRef.current &&
+          progQuant === prevInstProgQuantRef.current
+        ) {
+          return; // identical frame — skip
+        }
+        prevStepRef.current = currentStep;
+        prevMutedRef.current = isMuted;
+        prevPlayingRef.current = state.isPlaying;
+        prevFilledStepsRef.current = filledSteps;
+        prevInstProgQuantRef.current = progQuant;
+
+        ctx.clearRect(0, 0, size, size);
 
         // Faint ring stroke
         ctx.beginPath();
@@ -174,17 +194,19 @@ export function DotRingOrb({ instrumentId, size }: Props) {
           const startAngle = Math.PI / 2; // 6 o'clock (step 0)
           const endAngle = startAngle - instProg * TWO_PI; // counter-clockwise to match dot order
 
-          // Gradient arc (counter-clockwise)
-          const segments = Math.max(8, Math.ceil(instProg * 60));
+          // Gradient arc (counter-clockwise) — 12 segments max for performance
+          const segments = 12;
           const alpha = isMuted ? 0.3 : 0.85;
+          ctx.lineWidth = 4;
           for (let s = 0; s < segments; s++) {
+            const t0 = s / segments;
             const t1 = (s + 1) / segments;
-            const a0 = startAngle - (s / segments) * instProg * TWO_PI;
+            const a0 = startAngle - t0 * instProg * TWO_PI;
             const a1 = startAngle - t1 * instProg * TWO_PI;
+            const segAlpha = Math.round(t1 * alpha * 255);
             ctx.beginPath();
             ctx.arc(cx, cy, radius, a0, a1, true);
-            ctx.strokeStyle = `rgba(${cr},${cg},${cb},${(t1 * alpha).toFixed(2)})`;
-            ctx.lineWidth = 4;
+            ctx.strokeStyle = `rgba(${cr},${cg},${cb},${segAlpha / 255})`;
             ctx.stroke();
           }
 
@@ -245,6 +267,8 @@ export function DotRingOrb({ instrumentId, size }: Props) {
         prevMutedRef.current = isMuted;
         prevPlayingRef.current = state.isPlaying;
         prevHitsRef.current = inst.hits;
+
+        ctx.clearRect(0, 0, size, size);
 
         const hitArr = hitStepsRef.current;
         const xy = dotXYRef.current;

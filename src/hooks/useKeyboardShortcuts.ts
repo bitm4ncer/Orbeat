@@ -68,7 +68,9 @@ export function useKeyboardShortcuts(): void {
       }
 
       // Delete selected scene, instrument(s), or effect — Backspace / Delete / X
+      // Skip when the piano roll is focused — it handles its own Delete/Backspace for notes
       if ((e.code === 'Backspace' || e.code === 'Delete' || e.code === 'KeyX') && !isMod && !e.shiftKey) {
+        if ((document.activeElement as HTMLElement)?.closest?.('[data-piano-roll]')) return;
         const s = useStore.getState();
         if (s.renamingId) return; // don't delete while renaming
         if (s.selectedSceneId) {

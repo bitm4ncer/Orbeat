@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useClickOutside } from '../../hooks/useClickOutside';
 import { useStore } from '../../state/store';
@@ -7,6 +7,7 @@ import { serializeSet, exportSetToFile, importSetFromFile } from '../../storage/
 import { gzipAsync, toBase64Url, strToU8 } from '../../storage/compressionUtils';
 import { setLastSetId } from '../../storage/sessionAutosave';
 import { encodeSetToUrl, buildShareUrl, exportSamplesZip, importSamplesZip } from '../../storage/urlShare';
+import { copyToClipboard } from '../../utils/clipboard';
 import type { OrbitrackSet, SetVersionEntry } from '../../types/storage';
 import { SaveSetDialog } from './SaveSetDialog';
 import { OpenSetDialog } from './OpenSetDialog';
@@ -31,7 +32,7 @@ export function FilesMenu({ anchorRef, onClose }: FilesMenuProps) {
   const [shareOpen, setShareOpen] = useState(false);
   const thumbnail = useStore((s) => s.currentSetThumbnail);
   useClickOutside(ref, () => {
-    if (!saveOpen && !openDialogOpen) onClose();
+    if (!saveOpen && !openDialogOpen && !shareOpen) onClose();
   });
 
   const rect = anchorRef.current?.getBoundingClientRect();
@@ -241,26 +242,43 @@ export function FilesMenu({ anchorRef, onClose }: FilesMenuProps) {
 }
 
 function SharePanel({ onClose }: { onClose: () => void }) {
-  const [copyStatus, setCopyStatus] = useState<'idle' | 'copying' | 'copied' | 'error'>('idle');
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'encoding' | 'ready' | 'copied' | 'error'>('idle');
   const [zipStatus, setZipStatus] = useState<'idle' | 'working' | 'done' | 'error'>('idle');
   const [hasCustomSamples, setHasCustomSamples] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
+  const shareUrlRef = useRef<string | null>(null);
+
+  // Pre-encode the share URL on mount so copy can be synchronous
+  useEffect(() => {
+    let cancelled = false;
+    setCopyStatus('encoding');
+    (async () => {
+      try {
+        const store = useStore.getState();
+        const state = store.getSerializableState();
+        const { encoded, hasCustomSamples: hcs } = await encodeSetToUrl(state, store.currentSetName, store.currentSetThumbnail ?? undefined);
+        if (cancelled) return;
+        shareUrlRef.current = buildShareUrl(encoded);
+        setHasCustomSamples(hcs);
+        setCopyStatus('ready');
+      } catch (e) {
+        console.error('[Share] Encode failed:', e);
+        if (!cancelled) setCopyStatus('error');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const handleCopyLink = async () => {
-    if (copyStatus === 'copying') return;
-    setCopyStatus('copying');
+    if (!shareUrlRef.current || copyStatus === 'encoding') return;
     try {
-      const store = useStore.getState();
-      const state = store.getSerializableState();
-      const { encoded, hasCustomSamples: hcs } = await encodeSetToUrl(state, store.currentSetName, store.currentSetThumbnail ?? undefined);
-      setHasCustomSamples(hcs);
-      await navigator.clipboard.writeText(buildShareUrl(encoded));
+      await copyToClipboard(shareUrlRef.current);
       setCopyStatus('copied');
-      setTimeout(() => setCopyStatus('idle'), 2500);
+      setTimeout(() => setCopyStatus('ready'), 2500);
     } catch (e) {
       console.error('[Share] Copy failed:', e);
       setCopyStatus('error');
-      setTimeout(() => setCopyStatus('idle'), 3000);
+      setTimeout(() => setCopyStatus('ready'), 3000);
     }
   };
 
@@ -300,7 +318,7 @@ function SharePanel({ onClose }: { onClose: () => void }) {
   };
 
   const copyLabel =
-    copyStatus === 'copying' ? 'Encoding...' : copyStatus === 'copied' ? 'Copied!' : copyStatus === 'error' ? 'Failed' : 'Copy link';
+    copyStatus === 'encoding' ? 'Encoding...' : copyStatus === 'copied' ? 'Copied!' : copyStatus === 'error' ? 'Failed' : 'Copy link';
 
   return createPortal(
     <div className="fixed inset-0 z-[10001] flex items-center justify-center backdrop-blur-sm bg-black/40" onClick={onClose}>
@@ -309,7 +327,7 @@ function SharePanel({ onClose }: { onClose: () => void }) {
 
         <button
           onClick={handleCopyLink}
-          disabled={copyStatus === 'copying'}
+          disabled={copyStatus === 'encoding'}
           className={`w-full text-[12px] px-4 py-2 rounded font-medium transition-colors mb-2 cursor-pointer
             ${
               copyStatus === 'copied'
@@ -351,7 +369,7 @@ function SharePanel({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="mt-2 text-[10px] text-text-secondary/40 leading-snug">
-          Factory sounds load by name. Share the ZIP for custom samples.
+          This link stores the current state of the project. Save it or share it. Opening a link restores the saved state of a set — it's not a live link. While the Set Image can be stored in the slug, custom samples must be downloaded.
         </div>
       </div>
     </div>,

@@ -5,6 +5,10 @@ const DISPLAY_FRAMES = 16;
 const SAMPLES = 200;
 const BG = '#0e0e18';
 
+// Pre-allocated sample buffers — reused on every render to avoid GC pressure
+const _sampleBuffers: Float32Array[] = [];
+for (let i = 0; i < DISPLAY_FRAMES; i++) _sampleBuffers.push(new Float32Array(SAMPLES));
+
 interface Props {
   bankId: string;
   position: number;
@@ -44,56 +48,47 @@ export function WavetableDisplay3D({ bankId, position, warpMode, warpAmount, col
       const xSkew = totalXSkew / (DISPLAY_FRAMES - 1);
       const yStep = (H - padTop - padBottom) / (DISPLAY_FRAMES + 2); // vertical spacing per frame
       const waveAmp = yStep * 1.8;          // waveform amplitude
-      const waveWidth = W - padX * 2 - totalXSkew;
+      const rightEdge = W - padX;           // all frames share same right edge
 
       // Find which display frame is closest to current position
       const activeIdx = Math.round(position * (DISPLAY_FRAMES - 1));
 
-      // Pre-sample all frames for global peak normalization
-      const allSamples: Float32Array[] = [];
+      // Pre-sample all frames for global peak normalization (reuse pre-allocated buffers)
       let globalPeak = 0;
       for (let f = 0; f < DISPLAY_FRAMES; f++) {
         const framePos = f / (DISPLAY_FRAMES - 1);
-        const samples = new Float32Array(SAMPLES);
+        const samples = _sampleBuffers[f];
         for (let j = 0; j < SAMPLES; j++) {
           const t = j / SAMPLES;
           samples[j] = sampleWTWaveShape(bankId, framePos, t, warpMode, warpAmount);
           const absV = Math.abs(samples[j]);
           if (absV > globalPeak) globalPeak = absV;
         }
-        allSamples.push(samples);
       }
       if (globalPeak < 0.001) globalPeak = 1;
 
       // Draw frames back-to-front (painter's algorithm)
       for (let f = 0; f < DISPLAY_FRAMES; f++) {
         const isActive = f === activeIdx;
-        const samples = allSamples[f];
+        const samples = _sampleBuffers[f];
         const xOff = padX + (DISPLAY_FRAMES - 1 - f) * xSkew;
         const yBase = H - padBottom - f * yStep;
 
-        // Build waveform path points
+        // Build waveform path points — each frame extends to shared rightEdge
+        const frameWidth = rightEdge - xOff;
         const points: { x: number; y: number }[] = [];
         for (let j = 0; j <= SAMPLES; j++) {
           const jc = Math.min(j, SAMPLES - 1);
           const t = jc / SAMPLES;
           const val = samples[jc] / globalPeak;
-          const x = xOff + t * waveWidth;
+          const x = xOff + t * frameWidth;
           const y = yBase - val * waveAmp;
           points.push({ x, y });
         }
 
-        // Occluder fill: waveform path → bottom edge → fills with bg to hide frames behind
-        ctx.beginPath();
-        ctx.moveTo(points[0].x, points[0].y);
-        for (let j = 1; j < points.length; j++) {
-          ctx.lineTo(points[j].x, points[j].y);
-        }
-        ctx.lineTo(points[points.length - 1].x, yBase + 2);
-        ctx.lineTo(points[0].x, yBase + 2);
-        ctx.closePath();
-        ctx.fillStyle = BG;
-        ctx.fill();
+        // Depth fade: back frames are dimmer, front frames brighter
+        const depthAlpha = 0.12 + 0.28 * (f / (DISPLAY_FRAMES - 1));
+        const hexAlpha = Math.round(depthAlpha * 255).toString(16).padStart(2, '0');
 
         // Active frame: colored fill under waveform
         if (isActive) {
@@ -118,7 +113,7 @@ export function WavetableDisplay3D({ bankId, position, warpMode, warpAmount, col
           ctx.shadowColor = color;
           ctx.shadowBlur = 6;
         } else {
-          ctx.strokeStyle = `${color}30`;
+          ctx.strokeStyle = `${color}${hexAlpha}`;
           ctx.lineWidth = 0.8;
           ctx.shadowColor = 'transparent';
           ctx.shadowBlur = 0;

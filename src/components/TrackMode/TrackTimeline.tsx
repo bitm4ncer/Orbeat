@@ -221,6 +221,9 @@ export function TrackTimeline() {
   // Keyboard shortcuts (copy/paste/delete + zoom)
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Skip when the piano roll is focused — it handles its own shortcuts
+      if ((document.activeElement as HTMLElement)?.closest?.('[data-piano-roll]')) return;
+
       // Zoom shortcuts
       if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+')) {
         e.preventDefault();

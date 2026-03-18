@@ -1,4 +1,5 @@
 import * as Tone from 'tone';
+import { SAMPLE_BASE_URL } from './sampleBaseUrl';
 
 const players: Map<string, { player: Tone.Player; url: string }> = new Map();
 let output: Tone.Gain | null = null;
@@ -74,9 +75,13 @@ export function triggerSample(name: string, time?: number, volume = 0, playbackR
 
 export function previewSample(url: string): void {
   stopPreview();
+  Tone.start(); // ensure AudioContext is resumed
   const out = ensureOutput();
+  const resolved = url.startsWith('blob:') || url.startsWith('http')
+    ? url
+    : SAMPLE_BASE_URL + url;
   previewPlayer = new Tone.Player({
-    url,
+    url: resolved,
     autostart: true,
     onload: () => {
       // Player auto-starts after loading

@@ -6,6 +6,7 @@ import { importSetFromFile, deserializeSet } from '../../storage/serializer';
 import { setLastSetId } from '../../storage/sessionAutosave';
 import { gunzipAsync, fromBase64Url, strFromU8 } from '../../storage/compressionUtils';
 import { encodeSetToUrl, buildShareUrl } from '../../storage/urlShare';
+import { copyToClipboard } from '../../utils/clipboard';
 import { resizeImageToThumbnail } from '../../storage/thumbnailCapture';
 import type { SetMeta, OrbitrackSet, SetVersionEntry } from '../../types/storage';
 
@@ -108,7 +109,7 @@ export function OpenSetDialog({ onClose }: OpenSetDialogProps) {
       const thumb = setData?.meta?.thumbnail ?? store.currentSetThumbnail ?? undefined;
       const result = await encodeSetToUrl(serState, name, thumb);
       const url = buildShareUrl(result.encoded);
-      await navigator.clipboard.writeText(url);
+      await copyToClipboard(url);
 
       const copyKey = entry ? entry.versionId : id;
       setCopiedId(copyKey);

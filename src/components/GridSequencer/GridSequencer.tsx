@@ -578,6 +578,8 @@ export function GridSequencer() {
   ) => {
     e.stopPropagation();
     e.preventDefault();
+    // Explicitly focus the grid container so onKeyDown fires (preventDefault blocks default focus)
+    gridContainerRef.current?.focus();
 
     const key = noteKey(stepIndex, midiNote);
     const isSelected = selectedNotes.has(key);
@@ -596,12 +598,13 @@ export function GridSequencer() {
     // Multi-select drag: if note is part of a selection with >1 notes, drag them all
     const isMultiDrag = isSelected && selectedNotes.size > 1;
 
-    // If clicking an unselected note without Ctrl, clear selection
+    // If clicking an unselected note without Ctrl, select it (may start drag too)
     if (!isSelected) {
-      setSelectedNotes(new Set());
+      setSelectedNotes(new Set([key]));
     }
 
     const colWidth = gridBodyRef.current ? gridBodyRef.current.clientWidth / totalSteps : 1;
+    let didDrag = false;
 
     if (isMultiDrag) {
       // ── Multi-note batch drag ──────────────────────────────────────
@@ -611,6 +614,7 @@ export function GridSequencer() {
       let cumPitchDelta = 0;
 
       const handleMouseMove = (ev: MouseEvent) => {
+        didDrag = true;
         // Step delta (horizontal)
         const dx = ev.clientX - e.clientX;
         let newStepDelta = Math.round(dx / colWidth);
@@ -647,6 +651,10 @@ export function GridSequencer() {
       };
 
       const handleMouseUp = () => {
+        // If no drag occurred, narrow selection to just this note
+        if (!didDrag) {
+          setSelectedNotes(new Set([key]));
+        }
         // Remove notes overlapped by moved notes
         const store = useStore.getState();
         const inst = store.instruments.find((i) => i.id === instrument.id);
@@ -692,6 +700,7 @@ export function GridSequencer() {
       const handleMouseMove = (ev: MouseEvent) => {
         const drag = dragRef.current;
         if (!drag) return;
+        didDrag = true;
 
         // Vertical drag: change pitch
         const dy = ev.clientY - drag.startY;
@@ -700,24 +709,24 @@ export function GridSequencer() {
         const targetRowIdx = startRowIdx === -1 ? -1 : Math.max(0, Math.min(rows.length - 1, startRowIdx + rowDelta));
         const targetNote = targetRowIdx >= 0 ? rows[targetRowIdx] : undefined;
         if (targetNote !== undefined && targetNote !== drag.midiNote) {
-          if (isSampler) {
-            const state = useStore.getState();
-            const inst = state.instruments.find((i) => i.id === instrument.id);
-            if (!inst) return;
-            const freshMap = new Map<number, number>();
-            for (let i = 0; i < inst.hitPositions.length; i++) {
-              const s = Math.round(inst.hitPositions[i] * totalSteps) % totalSteps;
-              freshMap.set(s, i);
-            }
-            const freshHitIdx = freshMap.get(currentStep);
-            if (freshHitIdx !== undefined) {
+          const state = useStore.getState();
+          const inst = state.instruments.find((i) => i.id === instrument.id);
+          if (!inst) return;
+          const freshMap = new Map<number, number>();
+          for (let i = 0; i < inst.hitPositions.length; i++) {
+            const s = Math.round(inst.hitPositions[i] * totalSteps) % totalSteps;
+            freshMap.set(s, i);
+          }
+          const freshHitIdx = freshMap.get(currentStep);
+          if (freshHitIdx !== undefined) {
+            // Skip if target pitch already exists in the chord (can't have duplicate pitches)
+            const chordNotes = state.gridNotes[instrument.id]?.[freshHitIdx] || [];
+            if (!chordNotes.includes(targetNote)) {
               state.moveGridNote(instrument.id, freshHitIdx, drag.midiNote, targetNote);
               drag.hitIndex = freshHitIdx;
+              drag.midiNote = targetNote;
             }
-          } else {
-            useStore.getState().moveGridNote(instrument.id, drag.hitIndex, drag.midiNote, targetNote);
           }
-          drag.midiNote = targetNote;
         }
 
         // Horizontal drag: move to different step
@@ -729,15 +738,33 @@ export function GridSequencer() {
             ? snapStep(rawStep, gridRes, totalSteps - 1)
             : Math.max(0, Math.min(totalSteps - 1, rawStep));
           if (newStep !== currentStep) {
-            useStore.getState().moveSamplerNoteToStep(
+            const store = useStore.getState();
+            store.moveSamplerNoteToStep(
               instrument.id, currentStep, newStep, drag.midiNote,
             );
+            // Restore the dragged note's original length at the destination hit
+            // (it may have been overwritten by an existing hit's length)
+            const postInst = useStore.getState().instruments.find((i) => i.id === instrument.id);
+            if (postInst) {
+              const postMap = new Map<number, number>();
+              for (let i = 0; i < postInst.hitPositions.length; i++) {
+                postMap.set(Math.round(postInst.hitPositions[i] * totalSteps) % totalSteps, i);
+              }
+              const destHitIdx = postMap.get(newStep);
+              if (destHitIdx !== undefined) {
+                useStore.getState().setGridLength(instrument.id, destHitIdx, drag.startLength);
+              }
+            }
             currentStep = newStep;
           }
         }
       };
 
       const handleMouseUp = () => {
+        // If no drag occurred, select just this note
+        if (!didDrag) {
+          setSelectedNotes(new Set([key]));
+        }
         // Remove notes overlapped by the moved note
         const drag = dragRef.current;
         if (drag) {
@@ -774,6 +801,8 @@ export function GridSequencer() {
     if (e.button !== 0) return;
     // Note blocks call stopPropagation, so this only fires on the grid background / cells
     e.preventDefault();
+    // Explicitly focus the grid container so onKeyDown fires (preventDefault blocks default focus)
+    gridContainerRef.current?.focus();
 
     const rect = gridBodyRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -1155,6 +1184,7 @@ export function GridSequencer() {
         className="grid-sequencer bg-bg-secondary flex flex-col flex-1 min-w-0 outline-none"
         tabIndex={0}
         onKeyDown={handleKeyDown}
+        data-piano-roll
       >
         <div className="grid-toolbar flex items-center gap-2 px-4 py-1.5 border-b border-border">
           <span className="text-[10px] text-text-secondary">{instrument.name}</span>
@@ -1263,6 +1293,7 @@ export function GridSequencer() {
       className="grid-sequencer bg-bg-secondary flex flex-col flex-1 min-w-0 outline-none"
       tabIndex={0}
       onKeyDown={handleKeyDown}
+      data-piano-roll
     >
       <div className="grid-toolbar flex items-center gap-2 px-4 py-1.5 border-b border-border">
         {/* Chord presets dropdown */}
