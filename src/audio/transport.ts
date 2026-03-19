@@ -525,12 +525,13 @@ function _tick(time: number): void {
         const notes = state.gridNotes[instrument.id]?.[i];
         if (notes && notes.length > 0) {
           const glide = state.gridGlide[instrument.id]?.[i] ?? false;
-          const noteLength = state.gridLengths[instrument.id]?.[i] ?? 1;
+          const noteLengths = state.gridLengths[instrument.id]?.[i] || [];
           const velocity = state.gridVelocities[instrument.id]?.[i] ?? 100;
-          const noteDuration = secondsPerStep * noteLength * 0.9;
 
-          for (const midiNote of notes) {
-            triggerSuperdough(instrument, midiNote, noteDuration, time, glide, velocity, state);
+          for (let j = 0; j < notes.length; j++) {
+            const noteLength = noteLengths[j] ?? 1;
+            const noteDuration = secondsPerStep * noteLength * 0.9;
+            triggerSuperdough(instrument, notes[j], noteDuration, time, glide, velocity, state);
           }
         }
       }

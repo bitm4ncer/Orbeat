@@ -189,6 +189,7 @@ export function GridSequencer() {
     if (!inst) return [];
     const map = buildStepMap(inst);
     const lens = store.gridLengths[instrumentId] || [];
+    const gNotes = store.gridNotes[instrumentId] || [];
     const vels = store.gridVelocities[instrumentId] || [];
     const glds = store.gridGlide[instrumentId] || [];
     const result: { step: number; midi: number; length: number; velocity: number; glide: boolean }[] = [];
@@ -196,7 +197,9 @@ export function GridSequencer() {
       const { step, midi } = parseNoteKey(key);
       const hIdx = map.get(step);
       if (hIdx !== undefined) {
-        result.push({ step, midi, length: lens[hIdx] ?? 1, velocity: vels[hIdx] ?? 100, glide: glds[hIdx] ?? false });
+        const noteIdx = (gNotes[hIdx] || []).indexOf(midi);
+        const len = (noteIdx >= 0 ? (lens[hIdx] || [])[noteIdx] : undefined) ?? 1;
+        result.push({ step, midi, length: len, velocity: vels[hIdx] ?? 100, glide: glds[hIdx] ?? false });
       }
     }
     return result;
@@ -423,7 +426,13 @@ export function GridSequencer() {
     stepToHit.set(step, i);
   }
 
-  const getNoteLength = (hitIdx: number): number => lengths[hitIdx] ?? 1;
+  const getNoteLength = (hitIdx: number, midiNote?: number): number => {
+    const lenArr = lengths[hitIdx];
+    if (!lenArr || lenArr.length === 0) return 1;
+    if (midiNote === undefined) return lenArr[0] ?? 1;
+    const noteIdx = (notes[hitIdx] || []).indexOf(midiNote);
+    return (noteIdx >= 0 ? lenArr[noteIdx] : lenArr[0]) ?? 1;
+  };
 
   const handleGlideToggle = (e: React.MouseEvent, hitIndex: number) => {
     e.preventDefault();
@@ -441,17 +450,17 @@ export function GridSequencer() {
     e.stopPropagation();
     e.preventDefault();
     const colWidth = gridBodyRef.current ? gridBodyRef.current.clientWidth / totalSteps : 1;
-    const currentLength = getNoteLength(hitIdx);
+    const currentLength = getNoteLength(hitIdx, midiNote);
     const isSelected = selectedNotes.has(noteKey(stepIndex, midiNote));
 
     // Capture initial lengths for all selected notes
-    const initialLengths = new Map<string, { hitIdx: number; length: number }>();
+    const initialLengths = new Map<string, { hitIdx: number; midi: number; length: number }>();
     if (isSelected && selectedNotes.size > 1) {
       for (const key of selectedNotes) {
-        const { step } = parseNoteKey(key);
+        const { step, midi } = parseNoteKey(key);
         const hIdx = stepToHit.get(step);
         if (hIdx !== undefined) {
-          initialLengths.set(key, { hitIdx: hIdx, length: getNoteLength(hIdx) });
+          initialLengths.set(key, { hitIdx: hIdx, midi, length: getNoteLength(hIdx, midi) });
         }
       }
     }
@@ -481,14 +490,14 @@ export function GridSequencer() {
           const rawLen = info.length + stepDelta;
           const snapped = Math.max(snapInc, Math.round(rawLen / snapInc) * snapInc);
           const final = Math.min(snapped, totalSteps);
-          useStore.getState().setGridLength(instrument.id, info.hitIdx, final);
+          useStore.getState().setGridLength(instrument.id, info.hitIdx, final, info.midi);
         }
       } else {
         // Single resize
         const rawLen = drag.startLength + stepDelta;
         const snapped = Math.max(snapInc, Math.round(rawLen / snapInc) * snapInc);
         const final = Math.min(snapped, totalSteps);
-        useStore.getState().setGridLength(instrument.id, drag.hitIndex, final);
+        useStore.getState().setGridLength(instrument.id, drag.hitIndex, final, midiNote);
       }
     };
 
@@ -499,7 +508,13 @@ export function GridSequencer() {
       if (inst) {
         const ts = inst.loopSize;
         const curLengths = store.gridLengths[instrument.id] || [];
+        const curNotes = store.gridNotes[instrument.id] || [];
         const ranges: { step: number; midi: number; length: number }[] = [];
+
+        const getLen = (hIdx: number, midi: number) => {
+          const nIdx = (curNotes[hIdx] || []).indexOf(midi);
+          return (nIdx >= 0 ? (curLengths[hIdx] || [])[nIdx] : undefined) ?? 1;
+        };
 
         if (isSelected && initialLengths.size > 0) {
           for (const key of selectedNotes) {
@@ -510,7 +525,7 @@ export function GridSequencer() {
             }
             const hIdx = hMap.get(step);
             if (hIdx !== undefined) {
-              ranges.push({ step, midi, length: curLengths[hIdx] ?? 1 });
+              ranges.push({ step, midi, length: getLen(hIdx, midi) });
             }
           }
         } else {
@@ -520,7 +535,7 @@ export function GridSequencer() {
           }
           const hIdx = hMap.get(stepIndex);
           if (hIdx !== undefined) {
-            ranges.push({ step: stepIndex, midi: midiNote, length: curLengths[hIdx] ?? 1 });
+            ranges.push({ step: stepIndex, midi: midiNote, length: getLen(hIdx, midiNote) });
           }
         }
 
@@ -661,6 +676,7 @@ export function GridSequencer() {
         if (inst) {
           const ts = inst.loopSize;
           const curLengths = store.gridLengths[instrument.id] || [];
+          const curNotes = store.gridNotes[instrument.id] || [];
           const hMap = new Map<number, number>();
           for (let i = 0; i < inst.hitPositions.length; i++) {
             hMap.set(Math.round(inst.hitPositions[i] * ts) % ts, i);
@@ -668,7 +684,10 @@ export function GridSequencer() {
           const ranges = batchNotes
             .map((n) => {
               const hIdx = hMap.get(n.step);
-              return hIdx !== undefined ? { step: n.step, midi: n.midi, length: curLengths[hIdx] ?? 1 } : null;
+              if (hIdx === undefined) return null;
+              const nIdx = (curNotes[hIdx] || []).indexOf(n.midi);
+              const len = (nIdx >= 0 ? (curLengths[hIdx] || [])[nIdx] : undefined) ?? 1;
+              return { step: n.step, midi: n.midi, length: len };
             })
             .filter((r): r is { step: number; midi: number; length: number } => r !== null && r.length > 1);
           if (ranges.length > 0) store.removeOverlappedNotes(instrument.id, ranges);
@@ -693,7 +712,7 @@ export function GridSequencer() {
         startY: e.clientY,
         startNote: midiNote,
         startX: e.clientX,
-        startLength: getNoteLength(hitIdx),
+        startLength: getNoteLength(hitIdx, midiNote),
         colWidth,
       };
 
@@ -773,13 +792,15 @@ export function GridSequencer() {
           if (inst) {
             const ts = inst.loopSize;
             const curLengths = store.gridLengths[instrument.id] || [];
+            const curNotes = store.gridNotes[instrument.id] || [];
             const hMap = new Map<number, number>();
             for (let i = 0; i < inst.hitPositions.length; i++) {
               hMap.set(Math.round(inst.hitPositions[i] * ts) % ts, i);
             }
             const hIdx = hMap.get(currentStep);
             if (hIdx !== undefined) {
-              const len = curLengths[hIdx] ?? 1;
+              const nIdx = (curNotes[hIdx] || []).indexOf(drag.midiNote);
+              const len = (nIdx >= 0 ? (curLengths[hIdx] || [])[nIdx] : undefined) ?? 1;
               if (len > 1) {
                 store.removeOverlappedNotes(instrument.id, [{ step: currentStep, midi: drag.midiNote, length: len }]);
               }
@@ -870,8 +891,8 @@ export function GridSequencer() {
 
         for (const [step, hitIdx] of stepToHit.entries()) {
           const hitNotes = gridNotes[instrument.id]?.[hitIdx] || [];
-          const noteLen = getNoteLength(hitIdx);
           for (const midi of hitNotes) {
+            const noteLen = getNoteLength(hitIdx, midi);
             const rowIdx = rows.indexOf(midi);
             if (rowIdx === -1) continue;
             const nx1 = step * colWidth;
@@ -1166,9 +1187,8 @@ export function GridSequencer() {
       {Array.from(stepToHit.entries()).map(([stepIndex, hitIdx]) => {
         const hitNotes = notes[hitIdx] || [];
         const colPercent = 100 / totalSteps;
-        const noteLen = getNoteLength(hitIdx);
         return hitNotes.map((midiNote) =>
-          renderNoteBlock(stepIndex, hitIdx, midiNote, colPercent, noteLen, 0),
+          renderNoteBlock(stepIndex, hitIdx, midiNote, colPercent, getNoteLength(hitIdx, midiNote), 0),
         );
       })}
     </div>

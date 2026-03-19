@@ -244,13 +244,13 @@ export interface StoreState {
   // gridNotes[instrumentId][hitIndex] = array of MIDI note numbers
   gridNotes: Record<string, number[][]>;
   gridGlide: Record<string, boolean[]>;
-  gridLengths: Record<string, number[]>;
+  gridLengths: Record<string, number[][]>;
   gridVelocities: Record<string, number[]>;
   octaveOffset: number;
 
   setGridNote: (instrumentId: string, hitIndex: number, notes: number[]) => void;
   setGridGlide: (instrumentId: string, hitIndex: number, glide: boolean) => void;
-  setGridLength: (instrumentId: string, hitIndex: number, length: number) => void;
+  setGridLength: (instrumentId: string, hitIndex: number, length: number, midiNote?: number) => void;
   setGridVelocity: (instrumentId: string, hitIndex: number, velocity: number) => void;
   toggleGridNote: (instrumentId: string, hitIndex: number, midiNote: number) => void;
   moveGridNote: (instrumentId: string, hitIndex: number, fromNote: number, toNote: number) => void;
@@ -317,7 +317,7 @@ export interface StoreState {
     hitPositions: number[];
     hits: number;
     gridNotes: number[][];
-    gridLengths: number[];
+    gridLengths: number[][];
     gridGlide: boolean[];
   }>;
   snapshotForUndo: (instrumentId: string) => void;
@@ -464,7 +464,7 @@ export interface StoreState {
     instruments: Instrument[];
     gridNotes: Record<string, number[][]>;
     gridGlide: Record<string, boolean[]>;
-    gridLengths: Record<string, number[]>;
+    gridLengths: Record<string, number[][]>;
     gridVelocities: Record<string, number[]>;
     instrumentEffects: Record<string, Effect[]>;
     masterEffects: Effect[];
@@ -480,6 +480,37 @@ export interface StoreState {
   };
   loadSet: (set: OrbitrackSet) => void;
   newSet: () => void;
+}
+
+// Migration helper: convert old per-hit gridLengths (number[]) to per-note (number[][])
+// Exported for use in sessionAutosave restore
+export function migrateGridLengths(
+  gridLengths: Record<string, number[] | number[][]> | undefined,
+  gridNotes: Record<string, number[][]> | undefined,
+): Record<string, number[][]> {
+  if (!gridLengths) return {};
+  const result: Record<string, number[][]> = {};
+  for (const id of Object.keys(gridLengths)) {
+    const lengths = gridLengths[id];
+    if (!lengths || lengths.length === 0) {
+      result[id] = [];
+      continue;
+    }
+    // Detect old format: first non-empty entry is a number, not an array
+    const firstEntry = lengths[0];
+    if (typeof firstEntry === 'number') {
+      // Old format: each entry is a single number — replicate per note
+      const notes = gridNotes?.[id] || [];
+      result[id] = (lengths as number[]).map((len, i) => {
+        const noteCount = notes[i]?.length ?? 1;
+        return Array(noteCount).fill(len);
+      });
+    } else {
+      // Already new format
+      result[id] = lengths as number[][];
+    }
+  }
+  return result;
 }
 
 export const useStore = create<StoreState>((set, get) => ({
@@ -747,7 +778,7 @@ export const useStore = create<StoreState>((set, get) => ({
       }
       const gLengths = { ...s.gridLengths };
       if (gLengths[id]) {
-        const arr = [...gLengths[id]];
+        const arr = gLengths[id].map((a) => [...a]);
         arr.splice(hitIndex, 1);
         gLengths[id] = arr;
       }
@@ -864,7 +895,7 @@ export const useStore = create<StoreState>((set, get) => ({
       const instruments = [...s.instruments.slice(0, idx + 1), newInst, ...s.instruments.slice(idx + 1)];
       const gridNotes = { ...s.gridNotes, [newId]: s.gridNotes[id] ? [...s.gridNotes[id]] : [] };
       const gridGlide = { ...s.gridGlide, [newId]: s.gridGlide[id] ? [...s.gridGlide[id]] : [] };
-      const gridLengths = { ...s.gridLengths, [newId]: s.gridLengths[id] ? [...s.gridLengths[id]] : [] };
+      const gridLengths = { ...s.gridLengths, [newId]: s.gridLengths[id] ? s.gridLengths[id].map((a) => [...a]) : [] };
       return { instruments, gridNotes, gridGlide, gridLengths };
     }),
 
@@ -903,12 +934,22 @@ export const useStore = create<StoreState>((set, get) => ({
       return { gridGlide: grid };
     }),
 
-  setGridLength: (instrumentId, hitIndex, length) =>
+  setGridLength: (instrumentId, hitIndex, length, midiNote?) =>
     set((s) => {
       const grid = { ...s.gridLengths };
       if (!grid[instrumentId]) grid[instrumentId] = [];
-      grid[instrumentId] = [...grid[instrumentId]];
-      grid[instrumentId][hitIndex] = length;
+      grid[instrumentId] = grid[instrumentId].map((a) => [...a]);
+      const notes = s.gridNotes[instrumentId]?.[hitIndex] || [];
+      if (midiNote !== undefined) {
+        // Set length for a specific note
+        const arr = [...(grid[instrumentId][hitIndex] || notes.map(() => 1))];
+        const noteIdx = notes.indexOf(midiNote);
+        if (noteIdx >= 0) arr[noteIdx] = length;
+        grid[instrumentId][hitIndex] = arr;
+      } else {
+        // Set all notes at this hit to the same length
+        grid[instrumentId][hitIndex] = notes.map(() => length);
+      }
       return { gridLengths: grid };
     }),
 
@@ -927,12 +968,24 @@ export const useStore = create<StoreState>((set, get) => ({
       if (!grid[instrumentId]) grid[instrumentId] = [];
       grid[instrumentId] = [...grid[instrumentId]];
       const current = grid[instrumentId][hitIndex] || [];
+      const gLengths = { ...s.gridLengths };
+      if (gLengths[instrumentId]) {
+        gLengths[instrumentId] = gLengths[instrumentId].map((a) => [...a]);
+      }
       if (current.includes(midiNote)) {
+        const noteIdx = current.indexOf(midiNote);
         grid[instrumentId][hitIndex] = current.filter((n) => n !== midiNote);
+        if (noteIdx >= 0 && gLengths[instrumentId]?.[hitIndex]) {
+          gLengths[instrumentId][hitIndex] = gLengths[instrumentId][hitIndex].filter((_, i) => i !== noteIdx);
+        }
       } else {
         grid[instrumentId][hitIndex] = [...current, midiNote];
+        // Add default length for new note (use existing note's length or 1)
+        if (!gLengths[instrumentId]) gLengths[instrumentId] = [];
+        const existingLens = gLengths[instrumentId][hitIndex] || [];
+        gLengths[instrumentId][hitIndex] = [...existingLens, existingLens[0] ?? 1];
       }
-      return { gridNotes: grid };
+      return { gridNotes: grid, gridLengths: gLengths };
     }),
 
   moveGridNote: (instrumentId, hitIndex, fromNote, toNote) =>
@@ -941,13 +994,23 @@ export const useStore = create<StoreState>((set, get) => ({
       if (!grid[instrumentId]) grid[instrumentId] = [];
       grid[instrumentId] = [...grid[instrumentId]];
       const current = grid[instrumentId][hitIndex] || [];
+      const gLengths = { ...s.gridLengths };
+      if (gLengths[instrumentId]) {
+        gLengths[instrumentId] = gLengths[instrumentId].map((a) => [...a]);
+      }
       // If toNote already exists in the chord, just remove fromNote (no duplicates)
       if (current.includes(toNote)) {
+        const fromIdx = current.indexOf(fromNote);
         grid[instrumentId][hitIndex] = current.filter((n) => n !== fromNote);
+        // Also remove the length entry for the removed note
+        if (fromIdx >= 0 && gLengths[instrumentId]?.[hitIndex]) {
+          gLengths[instrumentId][hitIndex] = gLengths[instrumentId][hitIndex].filter((_, i) => i !== fromIdx);
+        }
       } else {
         grid[instrumentId][hitIndex] = current.map((n) => (n === fromNote ? toNote : n));
+        // Length stays at same index — no change needed
       }
-      return { gridNotes: grid };
+      return { gridNotes: grid, gridLengths: gLengths };
     }),
 
   moveGridNoteToStep: (instrumentId, fromHitIndex, toHitIndex, midiNote) =>
@@ -966,9 +1029,17 @@ export const useStore = create<StoreState>((set, get) => ({
       // Move length and glide data too
       const gridLengths = { ...s.gridLengths };
       if (gridLengths[instrumentId]) {
-        gridLengths[instrumentId] = [...gridLengths[instrumentId]];
-        const len = gridLengths[instrumentId][fromHitIndex] ?? 1;
-        gridLengths[instrumentId][toHitIndex] = len;
+        gridLengths[instrumentId] = gridLengths[instrumentId].map((a) => [...a]);
+        const fromLens = gridLengths[instrumentId][fromHitIndex] || [];
+        const fromNoteIdx = fromNotes.indexOf(midiNote);
+        const srcLen = (fromNoteIdx >= 0 ? fromLens[fromNoteIdx] : undefined) ?? 1;
+        // Remove the note's length from source
+        if (fromNoteIdx >= 0 && fromLens.length > 0) {
+          gridLengths[instrumentId][fromHitIndex] = fromLens.filter((_, i) => i !== fromNoteIdx);
+        }
+        // Add the note's length at destination
+        const toLens = gridLengths[instrumentId][toHitIndex] || [];
+        gridLengths[instrumentId][toHitIndex] = [...toLens, srcLen];
       }
       const gridGlide = { ...s.gridGlide };
       if (gridGlide[instrumentId]) {
@@ -995,23 +1066,28 @@ export const useStore = create<StoreState>((set, get) => ({
       if (fromHitIdx === undefined) return s;
 
       // Capture source metadata before removal
+      const fromNotes = grid[id]?.[fromHitIdx] || [];
+      const fromNoteIdx = fromNotes.indexOf(midiNote);
       const srcVel = (s.gridVelocities[id] || [])[fromHitIdx] ?? 100;
-      const srcLen = (s.gridLengths[id] || [])[fromHitIdx] ?? 1;
+      const srcLenArr = (s.gridLengths[id] || [])[fromHitIdx] || [];
+      const srcLen = (fromNoteIdx >= 0 ? srcLenArr[fromNoteIdx] : undefined) ?? 1;
       const srcGlide = (s.gridGlide[id] || [])[fromHitIdx] ?? false;
 
       let newPositions = [...inst.hitPositions];
-      const grid = { ...s.gridNotes };
       if (!grid[id]) grid[id] = [];
       grid[id] = [...grid[id]];
 
       // Remove note from source hit
-      const fromNotes = grid[id][fromHitIdx] || [];
       grid[id][fromHitIdx] = fromNotes.filter((n) => n !== midiNote);
 
       // If source hit has no remaining notes, remove the hit entirely
       const gLengths = { ...s.gridLengths };
       if (!gLengths[id]) gLengths[id] = [];
-      gLengths[id] = [...gLengths[id]];
+      gLengths[id] = gLengths[id].map((a) => [...a]);
+      // Remove the note's length from source hit
+      if (fromNoteIdx >= 0 && gLengths[id][fromHitIdx]) {
+        gLengths[id][fromHitIdx] = gLengths[id][fromHitIdx].filter((_, i) => i !== fromNoteIdx);
+      }
       const gGlide = { ...s.gridGlide };
       if (!gGlide[id]) gGlide[id] = [];
       gGlide[id] = [...gGlide[id]];
@@ -1042,12 +1118,15 @@ export const useStore = create<StoreState>((set, get) => ({
         newPositions.push(pos);
         grid[id][toHitIdx] = [midiNote];
         gVelocities[id][toHitIdx] = srcVel;
-        gLengths[id][toHitIdx] = srcLen;
+        gLengths[id][toHitIdx] = [srcLen];
         gGlide[id][toHitIdx] = srcGlide;
       } else {
         const toNotes = grid[id][toHitIdx] || [];
         if (!toNotes.includes(midiNote)) {
           grid[id][toHitIdx] = [...toNotes, midiNote];
+          // Add dragged note's length to destination (preserve existing note lengths)
+          const toLens = gLengths[id][toHitIdx] || [];
+          gLengths[id][toHitIdx] = [...toLens, srcLen];
         }
       }
 
@@ -1086,20 +1165,21 @@ export const useStore = create<StoreState>((set, get) => ({
       // Clone mutable state
       let positions = [...inst.hitPositions];
       const grid: number[][] = [...(s.gridNotes[id] || [])].map((a) => [...a]);
-      const gLen: number[] = [...(s.gridLengths[id] || [])];
+      const gLen: number[][] = (s.gridLengths[id] || []).map((a) => [...a]);
       const gVel: number[] = [...(s.gridVelocities[id] || [])];
       const gGlide: boolean[] = [...(s.gridGlide[id] || [])];
 
       // Collect source info for each note, then remove them all
-      interface NoteInfo { hitIdx: number; midi: number; step: number; vel: number; len: number; glide: boolean; }
+      interface NoteInfo { hitIdx: number; noteIdx: number; midi: number; step: number; vel: number; len: number; glide: boolean; }
       const infos: NoteInfo[] = [];
       for (const n of notes) {
         const hitIdx = stepToHit.get(n.step);
         if (hitIdx === undefined) continue;
+        const noteIdx = (grid[hitIdx] || []).indexOf(n.midi);
         infos.push({
-          hitIdx, midi: n.midi, step: n.step,
+          hitIdx, noteIdx, midi: n.midi, step: n.step,
           vel: gVel[hitIdx] ?? 100,
-          len: gLen[hitIdx] ?? 1,
+          len: (gLen[hitIdx] || [])[noteIdx >= 0 ? noteIdx : 0] ?? 1,
           glide: gGlide[hitIdx] ?? false,
         });
       }
@@ -1109,16 +1189,21 @@ export const useStore = create<StoreState>((set, get) => ({
       for (const info of sortedByHit) {
         const hitNotes = grid[info.hitIdx];
         if (!hitNotes) continue;
+        const noteIdx = hitNotes.indexOf(info.midi);
         const filtered = hitNotes.filter((m) => m !== info.midi);
         if (filtered.length === 0) {
           // Remove the entire hit
           grid.splice(info.hitIdx, 1);
-          positions.splice(info.hitIdx, 1);
           gLen.splice(info.hitIdx, 1);
+          positions.splice(info.hitIdx, 1);
           gVel.splice(info.hitIdx, 1);
           gGlide.splice(info.hitIdx, 1);
         } else {
           grid[info.hitIdx] = filtered;
+          // Remove the specific note's length
+          if (noteIdx >= 0 && gLen[info.hitIdx]) {
+            gLen[info.hitIdx] = gLen[info.hitIdx].filter((_, i) => i !== noteIdx);
+          }
         }
       }
 
@@ -1139,13 +1224,14 @@ export const useStore = create<StoreState>((set, get) => ({
           // Add note to existing hit
           if (!grid[targetHit].includes(newMidi)) {
             grid[targetHit] = [...grid[targetHit], newMidi];
+            gLen[targetHit] = [...(gLen[targetHit] || []), info.len];
           }
         } else {
           // Create new hit
           targetHit = positions.length;
           positions.push(newStep / totalSteps);
           grid[targetHit] = [newMidi];
-          gLen[targetHit] = info.len;
+          gLen[targetHit] = [info.len];
           gVel[targetHit] = info.vel;
           gGlide[targetHit] = info.glide;
         }
@@ -1170,7 +1256,7 @@ export const useStore = create<StoreState>((set, get) => ({
       const totalSteps = inst.loopSize;
       let positions = [...inst.hitPositions];
       const grid: number[][] = [...(s.gridNotes[id] || [])].map((a) => [...a]);
-      const gLen: number[] = [...(s.gridLengths[id] || [])];
+      const gLen: number[][] = (s.gridLengths[id] || []).map((a) => [...a]);
       const gVel: number[] = [...(s.gridVelocities[id] || [])];
       const gGlide: boolean[] = [...(s.gridGlide[id] || [])];
 
@@ -1208,6 +1294,7 @@ export const useStore = create<StoreState>((set, get) => ({
       unique.sort((a, b) => b.hitIdx - a.hitIdx);
 
       for (const { hitIdx, midi } of unique) {
+        const noteIdx = grid[hitIdx].indexOf(midi);
         const filtered = grid[hitIdx].filter((m) => m !== midi);
         if (filtered.length === 0) {
           grid.splice(hitIdx, 1);
@@ -1217,6 +1304,10 @@ export const useStore = create<StoreState>((set, get) => ({
           gGlide.splice(hitIdx, 1);
         } else {
           grid[hitIdx] = filtered;
+          // Remove the specific note's length
+          if (noteIdx >= 0 && gLen[hitIdx]) {
+            gLen[hitIdx] = gLen[hitIdx].filter((_, i) => i !== noteIdx);
+          }
         }
       }
 
@@ -1239,7 +1330,7 @@ export const useStore = create<StoreState>((set, get) => ({
       const totalSteps = inst.loopSize;
       let positions = [...inst.hitPositions];
       const grid: number[][] = [...(s.gridNotes[id] || [])].map((a) => [...a]);
-      const gLen: number[] = [...(s.gridLengths[id] || [])];
+      const gLen: number[][] = (s.gridLengths[id] || []).map((a) => [...a]);
       const gVel: number[] = [...(s.gridVelocities[id] || [])];
       const gGlide: boolean[] = [...(s.gridGlide[id] || [])];
 
@@ -1255,18 +1346,21 @@ export const useStore = create<StoreState>((set, get) => ({
 
         const hitIdx = curMap.get(step);
         if (hitIdx !== undefined) {
-          if (!grid[hitIdx].includes(note.midi)) {
+          const existingNoteIdx = grid[hitIdx].indexOf(note.midi);
+          if (existingNoteIdx >= 0) {
+            // Note already exists — update its length
+            gLen[hitIdx][existingNoteIdx] = note.length;
+          } else {
             grid[hitIdx] = [...grid[hitIdx], note.midi];
+            gLen[hitIdx] = [...(gLen[hitIdx] || []), note.length];
           }
-          // Update metadata to match pasted note
-          gLen[hitIdx] = note.length;
           gVel[hitIdx] = note.velocity;
           gGlide[hitIdx] = note.glide;
         } else {
           const newIdx = positions.length;
           positions.push(step / totalSteps);
           grid[newIdx] = [note.midi];
-          gLen[newIdx] = note.length;
+          gLen[newIdx] = [note.length];
           gVel[newIdx] = note.velocity;
           gGlide[newIdx] = note.glide;
         }
@@ -1329,7 +1423,7 @@ export const useStore = create<StoreState>((set, get) => ({
         gridUpdate = {
           gridNotes: { ...s.gridNotes, [id]: newNotes },
           gridGlide: { ...s.gridGlide, [id]: s.gridGlide[id] || [] },
-          gridLengths: { ...s.gridLengths, [id]: s.gridLengths[id] || [] },
+          gridLengths: { ...s.gridLengths, [id]: (s.gridLengths[id] || []).map((a) => [...a]) },
         };
       } else {
         // Just update loopSize; hit positions stay as-is
@@ -1360,7 +1454,7 @@ export const useStore = create<StoreState>((set, get) => ({
           hitPositions: [...inst.hitPositions],
           hits: inst.hits,
           gridNotes: (s.gridNotes[instrumentId] || []).map((n) => [...n]),
-          gridLengths: [...(s.gridLengths[instrumentId] || [])],
+          gridLengths: (s.gridLengths[instrumentId] || []).map((a) => [...a]),
           gridGlide: [...(s.gridGlide[instrumentId] || [])],
         },
       },
@@ -2499,7 +2593,7 @@ export const useStore = create<StoreState>((set, get) => ({
       instruments,
       gridNotes: orbitrackSet.gridNotes,
       gridGlide: orbitrackSet.gridGlide,
-      gridLengths: orbitrackSet.gridLengths,
+      gridLengths: migrateGridLengths(orbitrackSet.gridLengths, orbitrackSet.gridNotes),
       gridVelocities: orbitrackSet.gridVelocities ?? {},
       instrumentEffects: orbitrackSet.instrumentEffects,
       masterEffects: orbitrackSet.masterEffects ?? [],

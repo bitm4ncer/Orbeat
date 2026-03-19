@@ -11,7 +11,7 @@
  */
 
 import { getAudioContext as getSdAudioContext } from 'superdough';
-import { useStore, setOrbitCounter } from '../state/store';
+import { useStore, setOrbitCounter, migrateGridLengths } from '../state/store';
 import { put, get, del } from './idb';
 import type { Instrument } from '../types/instrument';
 import type { Effect } from '../types/effects';
@@ -77,7 +77,7 @@ interface LegacyAutosaveData {
   instruments: Instrument[];
   gridNotes: Record<string, number[][]>;
   gridGlide: Record<string, boolean[]>;
-  gridLengths: Record<string, number[]>;
+  gridLengths: Record<string, number[] | number[][]>;
   instrumentEffects: Record<string, Effect[]>;
   masterEffects?: Effect[];
   scenes?: InstrumentScene[];
@@ -395,7 +395,7 @@ export async function restoreLegacyAutosave(): Promise<boolean> {
       instruments: data.instruments,
       gridNotes: data.gridNotes,
       gridGlide: data.gridGlide ?? {},
-      gridLengths: data.gridLengths ?? {},
+      gridLengths: migrateGridLengths(data.gridLengths ?? {}, data.gridNotes),
       instrumentEffects: data.instrumentEffects ?? {},
       masterEffects: data.masterEffects ?? [],
       scenes: data.scenes ?? [],

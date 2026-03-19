@@ -66,7 +66,7 @@ export interface OrbitrackSet {
   instruments: Instrument[];
   gridNotes: Record<string, number[][]>;
   gridGlide: Record<string, boolean[]>;
-  gridLengths: Record<string, number[]>;
+  gridLengths: Record<string, number[] | number[][]>;
   gridVelocities?: Record<string, number[]>;
   instrumentEffects: Record<string, Effect[]>;
   masterEffects?: Effect[];

@@ -99,14 +99,14 @@ export function applyPattern(
     // Build new hitPositions, gridNotes, gridLengths, gridGlide from scratch
     const newPositions: number[] = [];
     const newNotes: number[][] = [];
-    const newLengths: number[] = [];
+    const newLengths: number[][] = [];
     const newGlide: boolean[] = [];
 
     for (const event of sorted) {
       const position = event.step / inst.loopSize;
       newPositions.push(position);
       newNotes.push(event.notes);
-      newLengths.push(event.length ?? 1);
+      newLengths.push(event.notes.map(() => event.length ?? 1));
       newGlide.push(event.glide ?? false);
     }
 
