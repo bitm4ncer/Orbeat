@@ -261,6 +261,8 @@ export interface StoreState {
   moveNotesBatch: (id: string, notes: { step: number; midi: number }[], stepDelta: number, pitchDelta: number) => void;
   /** Remove notes that fall within the time range of other notes at the same pitch. */
   removeOverlappedNotes: (id: string, ranges: { step: number; midi: number; length: number }[]) => void;
+  /** Trim notes that start before a new note and extend into it; remove notes covered by the new note. */
+  trimOverlappingNotes: (id: string, ranges: { step: number; midi: number; length: number }[]) => void;
   /** Add notes in batch (for paste/duplicate). Returns the new note keys for selection. */
   addNotesBatch: (id: string, notes: { step: number; midi: number; length: number; velocity: number; glide: boolean }[]) => void;
 
@@ -746,6 +748,10 @@ export const useStore = create<StoreState>((set, get) => ({
       if (!gVelocities[id]) gVelocities[id] = [];
       gVelocities[id] = [...gVelocities[id]];
       gVelocities[id][newIndex] = 100;
+      const gLengths = { ...s.gridLengths };
+      if (!gLengths[id]) gLengths[id] = [];
+      gLengths[id] = gLengths[id].map((a) => [...a]);
+      gLengths[id][newIndex] = [1];
       return {
         instruments: s.instruments.map((i) => {
           if (i.id !== id) return i;
@@ -753,6 +759,7 @@ export const useStore = create<StoreState>((set, get) => ({
         }),
         gridNotes: grid,
         gridVelocities: gVelocities,
+        gridLengths: gLengths,
       };
     }),
 
@@ -921,8 +928,18 @@ export const useStore = create<StoreState>((set, get) => ({
       const grid = { ...s.gridNotes };
       if (!grid[instrumentId]) grid[instrumentId] = [];
       grid[instrumentId] = [...grid[instrumentId]];
+      const prevNotes = grid[instrumentId][hitIndex] || [];
       grid[instrumentId][hitIndex] = notes;
-      return { gridNotes: grid };
+      // Keep per-note lengths for notes that remain; new notes get length 1
+      const gLengths = { ...s.gridLengths };
+      if (!gLengths[instrumentId]) gLengths[instrumentId] = [];
+      gLengths[instrumentId] = gLengths[instrumentId].map((a) => [...a]);
+      const prevLens = gLengths[instrumentId][hitIndex] || prevNotes.map(() => 1);
+      gLengths[instrumentId][hitIndex] = notes.map((n) => {
+        const oldIdx = prevNotes.indexOf(n);
+        return oldIdx >= 0 ? (prevLens[oldIdx] ?? 1) : 1;
+      });
+      return { gridNotes: grid, gridLengths: gLengths };
     }),
 
   setGridGlide: (instrumentId, hitIndex, glide) =>
@@ -1066,19 +1083,20 @@ export const useStore = create<StoreState>((set, get) => ({
       if (fromHitIdx === undefined) return s;
 
       // Capture source metadata before removal
-      const fromNotes = grid[id]?.[fromHitIdx] || [];
-      const fromNoteIdx = fromNotes.indexOf(midiNote);
+      const srcNotes = s.gridNotes[id]?.[fromHitIdx] || [];
+      const fromNoteIdx = srcNotes.indexOf(midiNote);
       const srcVel = (s.gridVelocities[id] || [])[fromHitIdx] ?? 100;
       const srcLenArr = (s.gridLengths[id] || [])[fromHitIdx] || [];
       const srcLen = (fromNoteIdx >= 0 ? srcLenArr[fromNoteIdx] : undefined) ?? 1;
       const srcGlide = (s.gridGlide[id] || [])[fromHitIdx] ?? false;
 
       let newPositions = [...inst.hitPositions];
+      const grid = { ...s.gridNotes };
       if (!grid[id]) grid[id] = [];
       grid[id] = [...grid[id]];
 
       // Remove note from source hit
-      grid[id][fromHitIdx] = fromNotes.filter((n) => n !== midiNote);
+      grid[id][fromHitIdx] = srcNotes.filter((n) => n !== midiNote);
 
       // If source hit has no remaining notes, remove the hit entirely
       const gLengths = { ...s.gridLengths };
@@ -1122,9 +1140,13 @@ export const useStore = create<StoreState>((set, get) => ({
         gGlide[id][toHitIdx] = srcGlide;
       } else {
         const toNotes = grid[id][toHitIdx] || [];
-        if (!toNotes.includes(midiNote)) {
+        const existingIdx = toNotes.indexOf(midiNote);
+        if (existingIdx >= 0) {
+          // Same pitch already at destination — update its length with the dragged note's length
+          if (!gLengths[id][toHitIdx]) gLengths[id][toHitIdx] = toNotes.map(() => 1);
+          gLengths[id][toHitIdx][existingIdx] = srcLen;
+        } else {
           grid[id][toHitIdx] = [...toNotes, midiNote];
-          // Add dragged note's length to destination (preserve existing note lengths)
           const toLens = gLengths[id][toHitIdx] || [];
           gLengths[id][toHitIdx] = [...toLens, srcLen];
         }
@@ -1310,6 +1332,83 @@ export const useStore = create<StoreState>((set, get) => ({
           }
         }
       }
+
+      return {
+        instruments: s.instruments.map((i) =>
+          i.id !== id ? i : { ...i, hits: positions.length, hitPositions: positions },
+        ),
+        gridNotes: { ...s.gridNotes, [id]: grid },
+        gridLengths: { ...s.gridLengths, [id]: gLen },
+        gridVelocities: { ...s.gridVelocities, [id]: gVel },
+        gridGlide: { ...s.gridGlide, [id]: gGlide },
+      };
+    }),
+
+  trimOverlappingNotes: (id, ranges) =>
+    set((s) => {
+      const inst = s.instruments.find((i) => i.id === id);
+      if (!inst || ranges.length === 0) return s;
+
+      const totalSteps = inst.loopSize;
+      let positions = [...inst.hitPositions];
+      const grid: number[][] = [...(s.gridNotes[id] || [])].map((a) => [...a]);
+      const gLen: number[][] = (s.gridLengths[id] || []).map((a) => [...a]);
+      const gVel: number[] = [...(s.gridVelocities[id] || [])];
+      const gGlide: boolean[] = [...(s.gridGlide[id] || [])];
+
+      let changed = false;
+
+      for (const range of ranges) {
+        // Rebuild step→hit map fresh each range (positions may shrink)
+        const stepToHit = new Map<number, number>();
+        for (let i = 0; i < positions.length; i++) {
+          const step = Math.round(positions[i] * totalSteps) % totalSteps;
+          stepToHit.set(step, i);
+        }
+
+        for (const [existingStep, hitIdx] of stepToHit.entries()) {
+          const hitNotes = grid[hitIdx];
+          if (!hitNotes) continue;
+          const noteIdx = hitNotes.indexOf(range.midi);
+          if (noteIdx < 0) continue;
+
+          const existingLen = (gLen[hitIdx] || [])[noteIdx] ?? 1;
+
+          if (existingStep === range.step) {
+            // Same start position — handled by moveSamplerNoteToStep (length already updated)
+            continue;
+          }
+
+          if (existingStep < range.step) {
+            // Existing note starts before ours — check if it extends into our range
+            const existingEnd = existingStep + existingLen;
+            if (existingEnd > range.step) {
+              // Trim: shorten it to end exactly at our start
+              const newLen = range.step - existingStep;
+              if (!gLen[hitIdx]) gLen[hitIdx] = hitNotes.map(() => 1);
+              gLen[hitIdx][noteIdx] = newLen;
+              changed = true;
+            }
+          } else if (existingStep > range.step && existingStep < range.step + range.length) {
+            // Existing note starts inside our range — remove it
+            const filtered = hitNotes.filter((_, i) => i !== noteIdx);
+            if (filtered.length === 0) {
+              // Remove the entire hit (process in reverse to keep indices stable)
+              grid.splice(hitIdx, 1);
+              positions.splice(hitIdx, 1);
+              gLen.splice(hitIdx, 1);
+              gVel.splice(hitIdx, 1);
+              gGlide.splice(hitIdx, 1);
+            } else {
+              grid[hitIdx] = filtered;
+              if (gLen[hitIdx]) gLen[hitIdx] = gLen[hitIdx].filter((_, i) => i !== noteIdx);
+            }
+            changed = true;
+          }
+        }
+      }
+
+      if (!changed) return s;
 
       return {
         instruments: s.instruments.map((i) =>

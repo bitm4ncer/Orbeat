@@ -24,6 +24,20 @@ interface DragState {
   colWidth: number;
 }
 
+// Ghost drag preview — the store is NOT touched during drag; only committed on mouseup
+interface NoteDragPreview {
+  originalStep: number;
+  originalMidi: number;
+  currentStep: number;
+  currentMidi: number;
+  length: number;
+}
+
+interface BatchDragPreview {
+  // originalKey (step:midi) → current projected { step, midi }
+  notes: Map<string, { step: number; midi: number }>;
+}
+
 // Selection rectangle in pixel coords relative to the grid body
 interface SelectionRect {
   startX: number;
@@ -115,6 +129,9 @@ export function GridSequencer() {
   // Multi-select state
   const [selectedNotes, setSelectedNotes] = useState<Set<string>>(new Set());
   const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(null);
+  // Ghost drag previews — notes stay in store at original position during drag
+  const [noteDragPreview, setNoteDragPreview] = useState<NoteDragPreview | null>(null);
+  const [batchDragPreview, setBatchDragPreview] = useState<BatchDragPreview | null>(null);
   const selRectRef = useRef<SelectionRect | null>(null);
   const [showVelocity, setShowVelocity] = useState(false);
   const clipboardRef = useRef<{ step: number; midi: number; length: number; velocity: number; glide: boolean }[]>([]);
@@ -582,10 +599,12 @@ export function GridSequencer() {
       // and does the hit + note assignment atomically in a single setState.
       store.addSamplerHit(instrument.id, snapped / totalSteps, midiNote);
     }
+    // Trim any same-pitch notes that the newly placed note overlaps or is placed inside
+    useStore.getState().trimOverlappingNotes(instrument.id, [{ step: snapped, midi: midiNote, length: 1 }]);
     setSelectedNotes(new Set());
   };
 
-  // ── Note drag (move) ─────────────────────────────────────────────────
+  // ── Note drag (move) — ghost mode: store NOT touched during drag ─────
   const handleNoteMouseDown = (
     e: React.MouseEvent,
     stepIndex: number,
@@ -593,7 +612,6 @@ export function GridSequencer() {
   ) => {
     e.stopPropagation();
     e.preventDefault();
-    // Explicitly focus the grid container so onKeyDown fires (preventDefault blocks default focus)
     gridContainerRef.current?.focus();
 
     const key = noteKey(stepIndex, midiNote);
@@ -610,10 +628,8 @@ export function GridSequencer() {
       return;
     }
 
-    // Multi-select drag: if note is part of a selection with >1 notes, drag them all
     const isMultiDrag = isSelected && selectedNotes.size > 1;
 
-    // If clicking an unselected note without Ctrl, select it (may start drag too)
     if (!isSelected) {
       setSelectedNotes(new Set([key]));
     }
@@ -622,75 +638,91 @@ export function GridSequencer() {
     let didDrag = false;
 
     if (isMultiDrag) {
-      // ── Multi-note batch drag ──────────────────────────────────────
-      // Collect the notes in the current selection
-      const batchNotes = [...selectedNotes].map(parseNoteKey);
-      let cumStepDelta = 0;
-      let cumPitchDelta = 0;
+      // ── Multi-note batch drag — ghost mode ────────────────────────
+      // Snapshot original positions at drag start
+      const originalNotes = [...selectedNotes].map(parseNoteKey);
+      // initialPreviewMap maps original key → current preview { step, midi }
+      const initialPreviewMap = new Map<string, { step: number; midi: number }>();
+      for (const n of originalNotes) {
+        initialPreviewMap.set(noteKey(n.step, n.midi), { step: n.step, midi: n.midi });
+      }
+
+      let lastStepDelta = 0;
+      let lastPitchDelta = 0;
+
+      setBatchDragPreview({ notes: new Map(initialPreviewMap) });
 
       const handleMouseMove = (ev: MouseEvent) => {
         didDrag = true;
-        // Step delta (horizontal)
         const dx = ev.clientX - e.clientX;
         let newStepDelta = Math.round(dx / colWidth);
-        if (snapEnabled && gridRes > 1) {
-          newStepDelta = Math.round(newStepDelta / gridRes) * gridRes;
-        }
+        if (snapEnabled && gridRes > 1) newStepDelta = Math.round(newStepDelta / gridRes) * gridRes;
 
-        // Pitch delta (vertical, scale-aware rows)
         const dy = ev.clientY - e.clientY;
         const rowDelta = Math.round(dy / ROW_H);
         const anchorRowIdx = rows.indexOf(midiNote);
         const targetRowIdx = anchorRowIdx === -1 ? anchorRowIdx : Math.max(0, Math.min(rows.length - 1, anchorRowIdx + rowDelta));
         const newPitchDelta = targetRowIdx >= 0 ? rows[targetRowIdx] - midiNote : 0;
 
-        const dStep = newStepDelta - cumStepDelta;
-        const dPitch = newPitchDelta - cumPitchDelta;
-
-        if (dStep !== 0 || dPitch !== 0) {
-          // Update batch positions
-          const currentBatch = batchNotes.map((n) => ({ step: n.step, midi: n.midi }));
-          useStore.getState().moveNotesBatch(instrument.id, currentBatch, dStep, dPitch);
-
-          // Update tracked positions
-          for (const n of batchNotes) {
-            n.step = ((n.step + dStep) % totalSteps + totalSteps) % totalSteps;
-            n.midi = n.midi + dPitch;
+        if (newStepDelta !== lastStepDelta || newPitchDelta !== lastPitchDelta) {
+          lastStepDelta = newStepDelta;
+          lastPitchDelta = newPitchDelta;
+          // Update preview positions (no store mutations)
+          const newMap = new Map<string, { step: number; midi: number }>();
+          for (const n of originalNotes) {
+            const previewStep = ((n.step + newStepDelta) % totalSteps + totalSteps) % totalSteps;
+            const previewMidi = Math.max(0, Math.min(127, n.midi + newPitchDelta));
+            newMap.set(noteKey(n.step, n.midi), { step: previewStep, midi: previewMidi });
           }
-          cumStepDelta = newStepDelta;
-          cumPitchDelta = newPitchDelta;
-
-          // Update selection keys to match new positions
-          setSelectedNotes(new Set(batchNotes.map((n) => noteKey(n.step, n.midi))));
+          setBatchDragPreview({ notes: newMap });
         }
       };
 
       const handleMouseUp = () => {
-        // If no drag occurred, narrow selection to just this note
+        setBatchDragPreview(null);
         if (!didDrag) {
           setSelectedNotes(new Set([key]));
-        }
-        // Remove notes overlapped by moved notes
-        const store = useStore.getState();
-        const inst = store.instruments.find((i) => i.id === instrument.id);
-        if (inst) {
-          const ts = inst.loopSize;
-          const curLengths = store.gridLengths[instrument.id] || [];
-          const curNotes = store.gridNotes[instrument.id] || [];
-          const hMap = new Map<number, number>();
-          for (let i = 0; i < inst.hitPositions.length; i++) {
-            hMap.set(Math.round(inst.hitPositions[i] * ts) % ts, i);
+        } else if (lastStepDelta !== 0 || lastPitchDelta !== 0) {
+          // Commit the move atomically
+          const store = useStore.getState();
+          store.moveNotesBatch(
+            instrument.id,
+            originalNotes.map((n) => ({ step: n.step, midi: n.midi })),
+            lastStepDelta,
+            lastPitchDelta,
+          );
+          // Trim notes overlapped by the moved notes
+          const inst2 = store.instruments.find((i) => i.id === instrument.id);
+          if (inst2) {
+            const ts = inst2.loopSize;
+            const freshState = useStore.getState();
+            const curLengths = freshState.gridLengths[instrument.id] || [];
+            const curNotes = freshState.gridNotes[instrument.id] || [];
+            const hMap2 = new Map<number, number>();
+            for (let i = 0; i < inst2.hitPositions.length; i++) {
+              hMap2.set(Math.round(inst2.hitPositions[i] * ts) % ts, i);
+            }
+            const newPositions = originalNotes.map((n) => ({
+              step: ((n.step + lastStepDelta) % totalSteps + totalSteps) % totalSteps,
+              midi: Math.max(0, Math.min(127, n.midi + lastPitchDelta)),
+            }));
+            const ranges = newPositions
+              .map((n) => {
+                const hIdx = hMap2.get(n.step);
+                if (hIdx === undefined) return null;
+                const nIdx = (curNotes[hIdx] || []).indexOf(n.midi);
+                const len = (nIdx >= 0 ? (curLengths[hIdx] || [])[nIdx] : undefined) ?? 1;
+                return { step: n.step, midi: n.midi, length: len };
+              })
+              .filter((r): r is { step: number; midi: number; length: number } => r !== null);
+            if (ranges.length > 0) freshState.trimOverlappingNotes(instrument.id, ranges);
           }
-          const ranges = batchNotes
-            .map((n) => {
-              const hIdx = hMap.get(n.step);
-              if (hIdx === undefined) return null;
-              const nIdx = (curNotes[hIdx] || []).indexOf(n.midi);
-              const len = (nIdx >= 0 ? (curLengths[hIdx] || [])[nIdx] : undefined) ?? 1;
-              return { step: n.step, midi: n.midi, length: len };
-            })
-            .filter((r): r is { step: number; midi: number; length: number } => r !== null && r.length > 1);
-          if (ranges.length > 0) store.removeOverlappedNotes(instrument.id, ranges);
+          // Update selection to new positions
+          setSelectedNotes(new Set(originalNotes.map((n) => {
+            const previewStep = ((n.step + lastStepDelta) % totalSteps + totalSteps) % totalSteps;
+            const previewMidi = Math.max(0, Math.min(127, n.midi + lastPitchDelta));
+            return noteKey(previewStep, previewMidi);
+          })));
         }
         window.removeEventListener('mousemove', handleMouseMove);
         window.removeEventListener('mouseup', handleMouseUp);
@@ -698,116 +730,95 @@ export function GridSequencer() {
 
       window.addEventListener('mousemove', handleMouseMove);
       window.addEventListener('mouseup', handleMouseUp);
+
     } else {
-      // ── Single-note drag (original behavior) ──────────────────────
-      let currentStep = stepIndex;
+      // ── Single-note drag — ghost mode ─────────────────────────────
       const hitIdx = stepToHit.get(stepIndex);
       if (hitIdx === undefined) return;
+      const startLength = getNoteLength(hitIdx, midiNote);
+      const startRowIdx = rows.indexOf(midiNote);
 
-      dragRef.current = {
-        mode: 'move',
-        hitIndex: hitIdx,
-        origHitIndex: hitIdx,
-        midiNote,
-        startY: e.clientY,
-        startNote: midiNote,
-        startX: e.clientX,
-        startLength: getNoteLength(hitIdx, midiNote),
-        colWidth,
-      };
+      setNoteDragPreview({
+        originalStep: stepIndex,
+        originalMidi: midiNote,
+        currentStep: stepIndex,
+        currentMidi: midiNote,
+        length: startLength,
+      });
+
+      // Local refs to track latest preview without stale closure
+      let previewStep = stepIndex;
+      let previewMidi = midiNote;
 
       const handleMouseMove = (ev: MouseEvent) => {
-        const drag = dragRef.current;
-        if (!drag) return;
         didDrag = true;
+        const dx = ev.clientX - e.clientX;
+        const stepDelta = Math.round(dx / colWidth);
+        const rawStep = stepIndex + stepDelta;
+        const newStep = snapEnabled
+          ? snapStep(rawStep, gridRes, totalSteps - 1)
+          : Math.max(0, Math.min(totalSteps - 1, rawStep));
 
-        // Vertical drag: change pitch
-        const dy = ev.clientY - drag.startY;
+        const dy = ev.clientY - e.clientY;
         const rowDelta = Math.round(dy / ROW_H);
-        const startRowIdx = rows.indexOf(drag.startNote);
         const targetRowIdx = startRowIdx === -1 ? -1 : Math.max(0, Math.min(rows.length - 1, startRowIdx + rowDelta));
-        const targetNote = targetRowIdx >= 0 ? rows[targetRowIdx] : undefined;
-        if (targetNote !== undefined && targetNote !== drag.midiNote) {
-          const state = useStore.getState();
-          const inst = state.instruments.find((i) => i.id === instrument.id);
-          if (!inst) return;
-          const freshMap = new Map<number, number>();
-          for (let i = 0; i < inst.hitPositions.length; i++) {
-            const s = Math.round(inst.hitPositions[i] * totalSteps) % totalSteps;
-            freshMap.set(s, i);
-          }
-          const freshHitIdx = freshMap.get(currentStep);
-          if (freshHitIdx !== undefined) {
-            // Skip if target pitch already exists in the chord (can't have duplicate pitches)
-            const chordNotes = state.gridNotes[instrument.id]?.[freshHitIdx] || [];
-            if (!chordNotes.includes(targetNote)) {
-              state.moveGridNote(instrument.id, freshHitIdx, drag.midiNote, targetNote);
-              drag.hitIndex = freshHitIdx;
-              drag.midiNote = targetNote;
-            }
-          }
-        }
+        const newMidi = targetRowIdx >= 0 ? rows[targetRowIdx] : midiNote;
 
-        // Horizontal drag: move to different step
-        {
-          const dx = ev.clientX - drag.startX;
-          const stepDelta = Math.round(dx / drag.colWidth);
-          const rawStep = stepIndex + stepDelta;
-          const newStep = snapEnabled
-            ? snapStep(rawStep, gridRes, totalSteps - 1)
-            : Math.max(0, Math.min(totalSteps - 1, rawStep));
-          if (newStep !== currentStep) {
-            const store = useStore.getState();
-            store.moveSamplerNoteToStep(
-              instrument.id, currentStep, newStep, drag.midiNote,
-            );
-            // Restore the dragged note's original length at the destination hit
-            // (it may have been overwritten by an existing hit's length)
-            const postInst = useStore.getState().instruments.find((i) => i.id === instrument.id);
-            if (postInst) {
-              const postMap = new Map<number, number>();
-              for (let i = 0; i < postInst.hitPositions.length; i++) {
-                postMap.set(Math.round(postInst.hitPositions[i] * totalSteps) % totalSteps, i);
-              }
-              const destHitIdx = postMap.get(newStep);
-              if (destHitIdx !== undefined) {
-                useStore.getState().setGridLength(instrument.id, destHitIdx, drag.startLength);
-              }
-            }
-            currentStep = newStep;
-          }
+        if (newStep !== previewStep || newMidi !== previewMidi) {
+          previewStep = newStep;
+          previewMidi = newMidi;
+          setNoteDragPreview({
+            originalStep: stepIndex,
+            originalMidi: midiNote,
+            currentStep: newStep,
+            currentMidi: newMidi,
+            length: startLength,
+          });
         }
       };
 
       const handleMouseUp = () => {
-        // If no drag occurred, select just this note
+        setNoteDragPreview(null);
+        dragRef.current = null;
+
         if (!didDrag) {
           setSelectedNotes(new Set([key]));
+          window.removeEventListener('mousemove', handleMouseMove);
+          window.removeEventListener('mouseup', handleMouseUp);
+          return;
         }
-        // Remove notes overlapped by the moved note
-        const drag = dragRef.current;
-        if (drag) {
-          const store = useStore.getState();
-          const inst = store.instruments.find((i) => i.id === instrument.id);
-          if (inst) {
-            const ts = inst.loopSize;
-            const curLengths = store.gridLengths[instrument.id] || [];
-            const curNotes = store.gridNotes[instrument.id] || [];
-            const hMap = new Map<number, number>();
-            for (let i = 0; i < inst.hitPositions.length; i++) {
-              hMap.set(Math.round(inst.hitPositions[i] * ts) % ts, i);
-            }
-            const hIdx = hMap.get(currentStep);
-            if (hIdx !== undefined) {
-              const nIdx = (curNotes[hIdx] || []).indexOf(drag.midiNote);
-              const len = (nIdx >= 0 ? (curLengths[hIdx] || [])[nIdx] : undefined) ?? 1;
-              if (len > 1) {
-                store.removeOverlappedNotes(instrument.id, [{ step: currentStep, midi: drag.midiNote, length: len }]);
+
+        const movedStep = previewStep;
+        const movedMidi = previewMidi;
+        const store = useStore.getState();
+
+        // Commit: move step (if changed)
+        if (movedStep !== stepIndex || movedMidi !== midiNote) {
+          store.moveSamplerNoteToStep(instrument.id, stepIndex, movedStep, midiNote);
+          // If pitch also changed, apply the pitch change at the new step
+          if (movedMidi !== midiNote) {
+            const freshInst = useStore.getState().instruments.find((i) => i.id === instrument.id);
+            if (freshInst) {
+              const freshMap = new Map<number, number>();
+              for (let i = 0; i < freshInst.hitPositions.length; i++) {
+                freshMap.set(Math.round(freshInst.hitPositions[i] * totalSteps) % totalSteps, i);
+              }
+              const destHitIdx = freshMap.get(movedStep);
+              if (destHitIdx !== undefined) {
+                useStore.getState().moveGridNote(instrument.id, destHitIdx, midiNote, movedMidi);
               }
             }
           }
         }
-        dragRef.current = null;
+
+        // Trim notes overlapped or preceded by this note
+        useStore.getState().trimOverlappingNotes(instrument.id, [{
+          step: movedStep,
+          midi: movedMidi,
+          length: startLength,
+        }]);
+
+        setSelectedNotes(new Set([noteKey(movedStep, movedMidi)]));
         window.removeEventListener('mousemove', handleMouseMove);
         window.removeEventListener('mouseup', handleMouseUp);
       };
@@ -1170,7 +1181,7 @@ export function GridSequencer() {
                   key={midiNote}
                   className={`border-b cursor-pointer transition-colors
                     ${isC ? 'border-border/60' : 'border-border/20'}
-                    ${isBlackKey ? 'bg-white/[0.02] hover:bg-white/5' : 'hover:bg-white/5'}`}
+                    ${isBlackKey ? 'hover:bg-white/5' : 'bg-white/[0.03] hover:bg-white/5'}`}
                   style={{ height: ROW_H }}
                 />
               );
@@ -1182,17 +1193,126 @@ export function GridSequencer() {
   );
 
   // ── Note blocks overlay ──────────────────────────────────────────────
-  const renderNoteBlocks = (topOffset: number) => (
-    <div className="absolute inset-0" style={{ top: topOffset, pointerEvents: 'none' }}>
-      {Array.from(stepToHit.entries()).map(([stepIndex, hitIdx]) => {
-        const hitNotes = notes[hitIdx] || [];
-        const colPercent = 100 / totalSteps;
-        return hitNotes.map((midiNote) =>
-          renderNoteBlock(stepIndex, hitIdx, midiNote, colPercent, getNoteLength(hitIdx, midiNote), 0),
-        );
-      })}
-    </div>
-  );
+  const renderNoteBlocks = (topOffset: number) => {
+    const colPercent = 100 / totalSteps;
+
+    // Build sets of notes to skip (they're being shown as ghost previews instead)
+    const skipSingle = noteDragPreview
+      ? noteKey(noteDragPreview.originalStep, noteDragPreview.originalMidi)
+      : null;
+    const skipBatch = batchDragPreview
+      ? new Set(batchDragPreview.notes.keys())
+      : null;
+
+    return (
+      <div className="absolute inset-0" style={{ top: topOffset, pointerEvents: 'none' }}>
+        {/* Normal notes — skip any that are actively being dragged */}
+        {Array.from(stepToHit.entries()).map(([stepIndex, hitIdx]) => {
+          const hitNotes = notes[hitIdx] || [];
+          return hitNotes.map((midiNote) => {
+            const k = noteKey(stepIndex, midiNote);
+            if (skipSingle === k) return null;
+            if (skipBatch?.has(k)) return null;
+            return renderNoteBlock(stepIndex, hitIdx, midiNote, colPercent, getNoteLength(hitIdx, midiNote), 0);
+          });
+        })}
+
+        {/* Single-note ghost: dimmed original + preview at drag target */}
+        {noteDragPreview && (() => {
+          const { originalStep, originalMidi, currentStep, currentMidi, length } = noteDragPreview;
+          const origHitIdx = stepToHit.get(originalStep);
+          return <>
+            {/* Dimmed ghost at original position */}
+            {origHitIdx !== undefined && (() => {
+              const rowIndex = rows.indexOf(originalMidi);
+              if (rowIndex === -1) return null;
+              return (
+                <div
+                  key="drag-origin-ghost"
+                  className="absolute pointer-events-none"
+                  style={{
+                    left: `${originalStep * colPercent}%`,
+                    top: rowIndex * ROW_H,
+                    width: `${colPercent * length}%`,
+                    height: ROW_H,
+                    zIndex: 12,
+                  }}
+                >
+                  <div className="absolute inset-0 m-px rounded-xl" style={{
+                    backgroundColor: instrument.color + '40',
+                    border: `1px dashed ${instrument.color}80`,
+                  }} />
+                </div>
+              );
+            })()}
+            {/* Live preview at current drag position */}
+            {(() => {
+              const rowIndex = rows.indexOf(currentMidi);
+              if (rowIndex === -1) return null;
+              return (
+                <div
+                  key="drag-preview"
+                  className="absolute pointer-events-none"
+                  style={{
+                    left: `${currentStep * colPercent}%`,
+                    top: rowIndex * ROW_H,
+                    width: `${colPercent * length}%`,
+                    height: ROW_H,
+                    zIndex: 13,
+                  }}
+                >
+                  <div className="absolute inset-0 m-px overflow-hidden flex items-center justify-center" style={{
+                    backgroundColor: instrument.color + 'cc',
+                    borderRadius: 12,
+                    boxShadow: `0 0 6px ${instrument.color}60`,
+                    outline: '2px solid rgba(255,255,255,0.7)',
+                    outlineOffset: -1,
+                  }}>
+                    <span className="text-[10px] text-black/70 leading-none select-none whitespace-nowrap font-semibold">
+                      {noteNameWithOctave(currentMidi)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
+          </>;
+        })()}
+
+        {/* Batch drag ghost previews */}
+        {batchDragPreview && Array.from(batchDragPreview.notes.entries()).map(([origKey, preview]) => {
+          const { step: origStep, midi: origMidi } = parseNoteKey(origKey);
+          const origHitIdx = stepToHit.get(origStep);
+          const origLen = origHitIdx !== undefined ? getNoteLength(origHitIdx, origMidi) : 1;
+          const rowIndex = rows.indexOf(preview.midi);
+          if (rowIndex === -1) return null;
+          return (
+            <div
+              key={`batch-preview-${origKey}`}
+              className="absolute pointer-events-none"
+              style={{
+                left: `${preview.step * colPercent}%`,
+                top: rowIndex * ROW_H,
+                width: `${colPercent * origLen}%`,
+                height: ROW_H,
+                zIndex: 13,
+              }}
+            >
+              <div className="absolute inset-0 m-px overflow-hidden flex items-center justify-center" style={{
+                backgroundColor: instrument.color + 'cc',
+                borderRadius: 12,
+                outline: '2px solid rgba(255,255,255,0.7)',
+                outlineOffset: -1,
+              }}>
+                <span className="text-[10px] text-black/70 leading-none select-none whitespace-nowrap font-semibold">
+                  {noteNameWithOctave(preview.midi)}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
 
   // ═══════════════════════════════════════════════════════════════════════
   // SAMPLER PIANO ROLL
