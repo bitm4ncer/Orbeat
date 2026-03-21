@@ -195,9 +195,36 @@ function FloatingLayout({
     if (rightEl) setRightTarget(rightEl);
   }, []);
 
-  const envOnChange = (k: 'attack' | 'decay' | 'sustain' | 'release', v: number) => {
-    const map = { attack: 'gainAttack', decay: 'gainDecay', sustain: 'gainSustain', release: 'gainRelease' } as const;
-    set(map[k], v);
+  const envParamMaps = {
+    1: { attack: 'gainAttack', decay: 'gainDecay', sustain: 'gainSustain', release: 'gainRelease' },
+    2: { attack: 'env2Attack', decay: 'env2Decay', sustain: 'env2Sustain', release: 'env2Release' },
+    3: { attack: 'env3Attack', decay: 'env3Decay', sustain: 'env3Sustain', release: 'env3Release' },
+  } as const;
+
+  const envOnChange = (envIndex: 1 | 2 | 3, k: 'attack' | 'decay' | 'sustain' | 'release', v: number) => {
+    if (params.envSync) {
+      set(envParamMaps[1][k], v);
+      set(envParamMaps[2][k], v);
+      set(envParamMaps[3][k], v);
+    } else {
+      set(envParamMaps[envIndex][k], v);
+    }
+  };
+
+  const toggleEnvSync = () => {
+    const newSync = !params.envSync;
+    if (newSync) {
+      // Copy env1 values to env2 and env3
+      set('env2Attack', params.gainAttack);
+      set('env2Decay', params.gainDecay);
+      set('env2Sustain', params.gainSustain);
+      set('env2Release', params.gainRelease);
+      set('env3Attack', params.gainAttack);
+      set('env3Decay', params.gainDecay);
+      set('env3Sustain', params.gainSustain);
+      set('env3Release', params.gainRelease);
+    }
+    set('envSync', newSync as any);
   };
 
   return (
@@ -281,29 +308,51 @@ function FloatingLayout({
           <div className="grid gap-0 h-full" style={{ gridTemplateColumns: '1fr 1fr' }}>
             {/* Left column: Oscillators */}
             <div className="p-2 pt-7 flex flex-col gap-1 overflow-y-auto" style={{ borderRight: '1px solid rgba(255,255,255,0.03)' }}>
+              {/* Envelope sync toggle */}
+              <div className="flex items-center justify-end px-1 mb-0.5">
+                <button
+                  onClick={toggleEnvSync}
+                  className="text-[8px] uppercase tracking-wider px-2 py-0.5 rounded font-medium transition-all"
+                  style={{
+                    background: params.envSync ? `${color}28` : `${color}10`,
+                    border: `1px solid ${params.envSync ? color : `${color}50`}`,
+                    color: params.envSync ? color : `${color}80`,
+                  }}
+                >
+                  env sync
+                </button>
+              </div>
               <OscillatorSection oscIndex={1} params={params} color={color} set={set} modProps={modProps}>
                 <InlineEnvelope
                   label="env 1" color={color}
                   attack={params.gainAttack} decay={params.gainDecay}
                   sustain={params.gainSustain} release={params.gainRelease}
-                  onChange={envOnChange}
+                  onChange={(k, v) => envOnChange(1, k, v)}
                   modProps={(key, label) => modProps(key as keyof SynthParams, label)}
                 />
               </OscillatorSection>
               <OscillatorSection oscIndex={2} params={params} color={color} set={set} modProps={modProps}>
                 <InlineEnvelope
                   label="env 2" color={color}
-                  attack={params.gainAttack} decay={params.gainDecay}
-                  sustain={params.gainSustain} release={params.gainRelease}
-                  onChange={envOnChange}
+                  attack={params.env2Attack} decay={params.env2Decay}
+                  sustain={params.env2Sustain} release={params.env2Release}
+                  onChange={(k, v) => envOnChange(2, k, v)}
+                  modProps={params.envSync ? undefined : (key, label) => {
+                    const map: Record<string, string> = { gainAttack: 'env2Attack', gainDecay: 'env2Decay', gainSustain: 'env2Sustain', gainRelease: 'env2Release' };
+                    return modProps((map[key] ?? key) as keyof SynthParams, label);
+                  }}
                 />
               </OscillatorSection>
               <OscillatorSection oscIndex={3} params={params} color={color} set={set} modProps={modProps}>
                 <InlineEnvelope
                   label="env 3" color={color}
-                  attack={params.gainAttack} decay={params.gainDecay}
-                  sustain={params.gainSustain} release={params.gainRelease}
-                  onChange={envOnChange}
+                  attack={params.env3Attack} decay={params.env3Decay}
+                  sustain={params.env3Sustain} release={params.env3Release}
+                  onChange={(k, v) => envOnChange(3, k, v)}
+                  modProps={params.envSync ? undefined : (key, label) => {
+                    const map: Record<string, string> = { gainAttack: 'env3Attack', gainDecay: 'env3Decay', gainSustain: 'env3Sustain', gainRelease: 'env3Release' };
+                    return modProps((map[key] ?? key) as keyof SynthParams, label);
+                  }}
                 />
               </OscillatorSection>
             </div>
@@ -742,10 +791,10 @@ export function SynthPanel() {
     <>
       <EnvelopeDisplay attack={params.gainAttack} decay={params.gainDecay} sustain={params.gainSustain} release={params.gainRelease} color={color} />
       <KnobRow>
-        <SynthKnob label="Atk" value={params.gainAttack} min={0} max={2} unit="s" defaultValue={0.001} color={color} onChange={(v) => set('gainAttack', v)} {...modProps('gainAttack', 'Atk')} />
-        <SynthKnob label="Dec" value={params.gainDecay} min={0.001} max={2} unit="s" defaultValue={0.1} color={color} onChange={(v) => set('gainDecay', v)} {...modProps('gainDecay', 'Dec')} />
-        <SynthKnob label="Sus" value={params.gainSustain} min={0} max={1} defaultValue={0.7} color={color} onChange={(v) => set('gainSustain', v)} {...modProps('gainSustain', 'Sus')} />
-        <SynthKnob label="Rel" value={params.gainRelease} min={0.01} max={3} unit="s" defaultValue={0.15} color={color} onChange={(v) => set('gainRelease', v)} {...modProps('gainRelease', 'Rel')} />
+        <SynthKnob label="Atk" value={params.gainAttack} min={0} max={2} unit="s" defaultValue={0.001} color={color} onChange={(v) => envOnChange(1, 'attack', v)} {...modProps('gainAttack', 'Atk')} />
+        <SynthKnob label="Dec" value={params.gainDecay} min={0.001} max={2} unit="s" defaultValue={0.1} color={color} onChange={(v) => envOnChange(1, 'decay', v)} {...modProps('gainDecay', 'Dec')} />
+        <SynthKnob label="Sus" value={params.gainSustain} min={0} max={1} defaultValue={0.7} color={color} onChange={(v) => envOnChange(1, 'sustain', v)} {...modProps('gainSustain', 'Sus')} />
+        <SynthKnob label="Rel" value={params.gainRelease} min={0.01} max={3} unit="s" defaultValue={0.15} color={color} onChange={(v) => envOnChange(1, 'release', v)} {...modProps('gainRelease', 'Rel')} />
       </KnobRow>
     </>
   );

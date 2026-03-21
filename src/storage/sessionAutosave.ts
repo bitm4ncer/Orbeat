@@ -174,8 +174,11 @@ function saveEmergencySnapshot(): void {
       scaleType: s.scaleType,
       trackMode: s.trackMode,
       arrangement: s.arrangement,
+      liveLaunchQuantize: s.liveLaunchQuantize,
+      liveLaunchMode: s.liveLaunchMode,
       currentSetName: s.currentSetName,
       currentSetId: s.currentSetId,
+      timestamp: Date.now(),
     };
     localStorage.setItem(LS_EMERGENCY_KEY, JSON.stringify(snap));
   } catch {
@@ -219,6 +222,8 @@ export function restoreEmergencySnapshot(): boolean {
       scaleType: snap.scaleType,
       trackMode: snap.trackMode,
       arrangement: snap.arrangement,
+      liveLaunchQuantize: snap.liveLaunchQuantize,
+      liveLaunchMode: snap.liveLaunchMode,
     };
 
     useStore.getState().loadSet(set);
@@ -231,6 +236,53 @@ export function restoreEmergencySnapshot(): boolean {
 
 export function clearEmergencySnapshot(): void {
   try { localStorage.removeItem(LS_EMERGENCY_KEY); } catch { /* ignore */ }
+}
+
+/** Apply emergency snapshot on top of IDB restore if it is strictly newer.
+ *  This handles the race where beforeunload captured fresher state than
+ *  the last completed async IDB save. Backward-compatible: old snapshots
+ *  without a timestamp field are silently skipped. */
+function applyEmergencySnapshotIfNewer(idbUpdatedAt: number): void {
+  try {
+    const raw = localStorage.getItem(LS_EMERGENCY_KEY);
+    if (!raw) return;
+    const snap = JSON.parse(raw);
+    if (!snap?.timestamp || !snap?.instruments?.length) return;
+    if (snap.timestamp <= idbUpdatedAt) return;
+
+    const set: OrbitrackSet = {
+      id: snap.currentSetId || '__emergency__' + uid(),
+      version: 1,
+      meta: {
+        id: snap.currentSetId || '__emergency__',
+        name: snap.currentSetName || 'Recovered Session',
+        createdAt: Date.now(),
+        updatedAt: snap.timestamp,
+      },
+      bpm: snap.bpm ?? 128,
+      stepsPerBeat: snap.stepsPerBeat,
+      masterVolume: snap.masterVolume ?? 0,
+      instruments: snap.instruments,
+      gridNotes: snap.gridNotes ?? {},
+      gridGlide: snap.gridGlide ?? {},
+      gridLengths: snap.gridLengths ?? {},
+      gridVelocities: snap.gridVelocities,
+      instrumentEffects: snap.instrumentEffects ?? {},
+      masterEffects: snap.masterEffects,
+      scenes: snap.scenes,
+      sceneEffects: snap.sceneEffects,
+      gridResolution: snap.gridResolution,
+      scaleRoot: snap.scaleRoot,
+      scaleType: snap.scaleType,
+      trackMode: snap.trackMode,
+      arrangement: snap.arrangement,
+      liveLaunchQuantize: snap.liveLaunchQuantize,
+      liveLaunchMode: snap.liveLaunchMode,
+    };
+
+    useStore.getState().loadSet(set);
+    clearEmergencySnapshot();
+  } catch { /* ignore corrupt snapshot */ }
 }
 
 // ── Core autosave ───────────────────────────────────────────────────────────
@@ -347,6 +399,11 @@ export async function restoreFromSetId(setId: string): Promise<boolean> {
     if (!set || !set.instruments || set.instruments.length === 0) return false;
 
     useStore.getState().loadSet(set);
+
+    // Check if the emergency localStorage snapshot is newer than the IDB data
+    // (handles the race where beforeunload's async IDB save didn't complete)
+    applyEmergencySnapshotIfNewer(set.meta.updatedAt);
+
     return true;
   } catch (err) {
     console.error('[autosave] restore from set ID failed:', err);
@@ -482,6 +539,8 @@ export function initSessionAutosave(): void {
         state.gridNotes !== prevState.gridNotes ||
         state.gridGlide !== prevState.gridGlide ||
         state.gridLengths !== prevState.gridLengths ||
+        state.gridVelocities !== prevState.gridVelocities ||
+        state.stepsPerBeat !== prevState.stepsPerBeat ||
         state.instrumentEffects !== prevState.instrumentEffects ||
         state.masterEffects !== prevState.masterEffects ||
         state.scenes !== prevState.scenes ||
@@ -492,7 +551,9 @@ export function initSessionAutosave(): void {
         state.scaleRoot !== prevState.scaleRoot ||
         state.scaleType !== prevState.scaleType ||
         state.trackMode !== prevState.trackMode ||
-        state.arrangement !== prevState.arrangement
+        state.arrangement !== prevState.arrangement ||
+        state.liveLaunchQuantize !== prevState.liveLaunchQuantize ||
+        state.liveLaunchMode !== prevState.liveLaunchMode
       ) {
         _dirty = true;
         debouncedSave();

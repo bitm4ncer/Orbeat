@@ -478,7 +478,9 @@ export interface StoreState {
     scaleType: string;
     trackMode: boolean;
     arrangement: ArrangementStep[];
+    stepsPerBeat: number;
     liveLaunchQuantize: 1 | 2 | 4 | 8;
+    liveLaunchMode: 'queue' | 'stack';
   };
   loadSet: (set: OrbitrackSet) => void;
   newSet: () => void;
@@ -2641,6 +2643,7 @@ export const useStore = create<StoreState>((set, get) => ({
       scaleType: s.scaleType,
       trackMode: s.trackMode,
       arrangement: s.arrangement,
+      stepsPerBeat: s.stepsPerBeat,
       liveLaunchQuantize: s.liveLaunchQuantize,
       liveLaunchMode: s.liveLaunchMode,
     };
@@ -2710,8 +2713,8 @@ export const useStore = create<StoreState>((set, get) => ({
       scaleType: orbitrackSet.scaleType ?? 'chromatic',
       trackMode: orbitrackSet.trackMode ?? false,
       arrangement: orbitrackSet.arrangement ?? [],
-      liveLaunchQuantize: ((orbitrackSet as unknown as Record<string, unknown>).liveLaunchQuantize as 1 | 2 | 4 | 8) ?? 1,
-      liveLaunchMode: ((orbitrackSet as unknown as Record<string, unknown>).liveLaunchMode as 'queue' | 'stack') ?? 'queue',
+      liveLaunchQuantize: orbitrackSet.liveLaunchQuantize ?? 1,
+      liveLaunchMode: orbitrackSet.liveLaunchMode ?? 'queue',
       liveMode: false,
       liveActiveSceneId: null,
       liveQueuedSceneId: null,

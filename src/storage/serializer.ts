@@ -61,6 +61,9 @@ export interface SerializableState {
   scaleType?: string;
   trackMode?: boolean;
   arrangement?: ArrangementStep[];
+  stepsPerBeat?: number;
+  liveLaunchQuantize?: 1 | 2 | 4 | 8;
+  liveLaunchMode?: 'queue' | 'stack';
 }
 
 export async function serializeSet(
@@ -122,6 +125,9 @@ export async function serializeSet(
     scaleType: state.scaleType,
     trackMode: state.trackMode,
     arrangement: state.arrangement,
+    stepsPerBeat: state.stepsPerBeat,
+    liveLaunchQuantize: state.liveLaunchQuantize,
+    liveLaunchMode: state.liveLaunchMode,
   };
 }
 

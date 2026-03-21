@@ -62,11 +62,23 @@ export const MOD_PARAM_META: Partial<Record<keyof SynthParams, ParamMeta>> = {
   // Master
   masterVolume:   { min: 0, max: 1, label: 'Volume' },
 
-  // Envelope
+  // Envelope (env1 — VCO)
   gainAttack:    { min: 0.001, max: 2, label: 'Attack', unit: 's' },
   gainDecay:     { min: 0.001, max: 2, label: 'Decay', unit: 's' },
   gainSustain:   { min: 0, max: 1, label: 'Sustain' },
   gainRelease:   { min: 0.001, max: 5, label: 'Release', unit: 's' },
+
+  // Envelope 2 (Sub1)
+  env2Attack:    { min: 0.001, max: 2, label: 'Env2 Atk', unit: 's' },
+  env2Decay:     { min: 0.001, max: 2, label: 'Env2 Dec', unit: 's' },
+  env2Sustain:   { min: 0, max: 1, label: 'Env2 Sus' },
+  env2Release:   { min: 0.001, max: 5, label: 'Env2 Rel', unit: 's' },
+
+  // Envelope 3 (Sub2)
+  env3Attack:    { min: 0.001, max: 2, label: 'Env3 Atk', unit: 's' },
+  env3Decay:     { min: 0.001, max: 2, label: 'Env3 Dec', unit: 's' },
+  env3Sustain:   { min: 0, max: 1, label: 'Env3 Sus' },
+  env3Release:   { min: 0.001, max: 5, label: 'Env3 Rel', unit: 's' },
 };
 
 /** All modulatable param keys (keys that have metadata) */

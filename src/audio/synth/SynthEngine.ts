@@ -78,11 +78,40 @@ function ensureDefaults(p: Partial<SynthParams>): SynthParams {
   }
   if (!p.synthMode) p.synthMode = 'osc';
   if (!p.fm) p.fm = { ...DEFAULT_FM_PARAMS, operators: [...DEFAULT_FM_PARAMS.operators.map(o => ({ ...o }))] as [typeof DEFAULT_FM_PARAMS.operators[0], typeof DEFAULT_FM_PARAMS.operators[0], typeof DEFAULT_FM_PARAMS.operators[0], typeof DEFAULT_FM_PARAMS.operators[0]] };
+  // Per-oscillator envelopes — migrate old presets by copying env1 values
+  if (p.env2Attack === undefined) p.env2Attack = p.gainAttack ?? 0.001;
+  if (p.env2Decay === undefined)  p.env2Decay  = p.gainDecay ?? 0.1;
+  if (p.env2Sustain === undefined) p.env2Sustain = p.gainSustain ?? 0.7;
+  if (p.env2Release === undefined) p.env2Release = p.gainRelease ?? 0.15;
+  if (p.env3Attack === undefined) p.env3Attack = p.gainAttack ?? 0.001;
+  if (p.env3Decay === undefined)  p.env3Decay  = p.gainDecay ?? 0.1;
+  if (p.env3Sustain === undefined) p.env3Sustain = p.gainSustain ?? 0.7;
+  if (p.env3Release === undefined) p.env3Release = p.gainRelease ?? 0.15;
+  if (p.envSync === undefined) p.envSync = true;
   return p as SynthParams;
 }
 
 const MAX_VOICES = 8;
 const MAX_UNISON = 7;
+
+/** Schedule a normalized (0→1) ADSR envelope on an AudioParam. Returns releaseEnd time. */
+function scheduleEnvADSR(
+  param: AudioParam, now: number, duration: number,
+  attack: number, decay: number, sustain: number, release: number,
+): number {
+  attack = Math.max(Number.isFinite(attack) ? attack : 0.001, 0.001);
+  decay = Math.max(Number.isFinite(decay) ? decay : 0.1, 0.001);
+  sustain = Math.max(0, Math.min(1, Number.isFinite(sustain) ? sustain : 0.7));
+  release = Math.max(Number.isFinite(release) ? release : 0.15, 0.02);
+  const attackEnd = now + attack;
+  const releaseStart = Math.max(now + duration, attackEnd + 0.001);
+  param.cancelScheduledValues(now);
+  param.setValueAtTime(0, now);
+  param.linearRampToValueAtTime(1, attackEnd);
+  param.setTargetAtTime(sustain, attackEnd, decay / 5);
+  param.setTargetAtTime(0, releaseStart, release / 5);
+  return releaseStart + release * 5;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PolyVoice: one polyphonic slot
@@ -100,10 +129,14 @@ class PolyVoice {
   fmOsc: OscillatorNode;         // FM modulator (legacy simple FM)
   fmGain: GainNode;              // FM depth → carrier.frequency (legacy)
   fmVoice: FMVoice;              // 4-operator FM voice
-  voiceGain: GainNode;           // ADSR envelope
+  voiceGain: GainNode;           // master peak level (constant per note)
+  env1Gain: GainNode;            // VCO envelope (normalized 0→1 ADSR)
+  env2Gain: GainNode;            // Sub1 envelope
+  env3Gain: GainNode;            // Sub2 envelope
   // Ring modulation: sub1 × main
   ringModGain: GainNode;         // main osc passes through; sub1 connects to .gain
   ringModWetGain: GainNode;      // wet mix for ring mod output
+  ringModDryGain: GainNode;      // dry level control for ring mod crossfade
   ringModActive = false;
   // String oscillator (Karplus-Strong)
   stringOsc: KarplusStrong;
@@ -121,6 +154,22 @@ class PolyVoice {
     this.voiceGain.gain.value = 0;
     this.voiceGain.connect(destination);
 
+    // Per-oscillator envelope nodes (normalized 0→1 ADSR)
+    this.env1Gain = ac.createGain();
+    this.env1Gain.gain.value = 0;
+    this.env1Gain.connect(this.voiceGain);
+    this.env2Gain = ac.createGain();
+    this.env2Gain.gain.value = 0;
+    this.env2Gain.connect(this.voiceGain);
+    this.env3Gain = ac.createGain();
+    this.env3Gain.gain.value = 0;
+    this.env3Gain.connect(this.voiceGain);
+
+    // Ring mod dry gain — inserted between main panners and env1Gain for crossfade
+    this.ringModDryGain = ac.createGain();
+    this.ringModDryGain.gain.value = 1; // transparent when ring mod off
+    this.ringModDryGain.connect(this.env1Gain);
+
     // Main oscillators (unison pool)
     this.mainOscs = [];
     this.mainGains = [];
@@ -131,7 +180,7 @@ class PolyVoice {
       const panner = ac.createStereoPanner();
       osc.connect(gain);
       gain.connect(panner);
-      panner.connect(this.voiceGain);
+      panner.connect(this.ringModDryGain);
       osc.start();
       this.mainOscs.push(osc);
       this.mainGains.push(gain);
@@ -154,9 +203,9 @@ class PolyVoice {
       this.driftGains.push(driftGain);
     }
 
-    // String oscillator (Karplus-Strong) — connected to voiceGain, muted when not in string mode
+    // String oscillator (Karplus-Strong) — connected to env1Gain, muted when not in string mode
     this.stringOsc = new KarplusStrong(ac);
-    this.stringOsc.connect(this.voiceGain);
+    this.stringOsc.connect(this.env1Gain);
 
     // Ring modulation node (main osc → ringModGain, sub1 → ringModGain.gain = multiplication)
     this.ringModGain = ac.createGain();
@@ -164,19 +213,19 @@ class PolyVoice {
     this.ringModWetGain = ac.createGain();
     this.ringModWetGain.gain.value = 0; // ring mod off by default
     this.ringModGain.connect(this.ringModWetGain);
-    this.ringModWetGain.connect(this.voiceGain);
+    this.ringModWetGain.connect(this.env1Gain);
 
     // Sub oscillators
     this.sub1Osc = ac.createOscillator();
     this.sub1Gain = ac.createGain();
     this.sub1Osc.connect(this.sub1Gain);
-    this.sub1Gain.connect(this.voiceGain);
+    this.sub1Gain.connect(this.env2Gain);
     this.sub1Osc.start();
 
     this.sub2Osc = ac.createOscillator();
     this.sub2Gain = ac.createGain();
     this.sub2Osc.connect(this.sub2Gain);
-    this.sub2Gain.connect(this.voiceGain);
+    this.sub2Gain.connect(this.env3Gain);
     this.sub2Osc.start();
 
     // FM modulator
@@ -215,6 +264,7 @@ class PolyVoice {
       this.ringModActive = false;
     }
     this.ringModWetGain.gain.setTargetAtTime(enabled ? mix : 0, now, 0.02);
+    this.ringModDryGain.gain.setTargetAtTime(enabled ? (1 - mix) : 1, now, 0.02);
   }
 
   /** Update drift amount (0 = off, 1 = max ~15 cents wander) */
@@ -237,6 +287,7 @@ class PolyVoice {
     for (const g of this.driftGains) { try { g.disconnect(); } catch { /* ignore */ } }
     try { this.ringModGain.disconnect(); } catch { /* ignore */ }
     try { this.ringModWetGain.disconnect(); } catch { /* ignore */ }
+    try { this.ringModDryGain.disconnect(); } catch { /* ignore */ }
     this.stringOsc.dispose();
     try { this.sub1Osc.stop(); } catch { /* already stopped */ }
     try { this.sub1Osc.disconnect(); } catch { /* ignore */ }
@@ -248,6 +299,9 @@ class PolyVoice {
     try { this.fmOsc.disconnect(); } catch { /* ignore */ }
     try { this.fmGain.disconnect(); } catch { /* ignore */ }
     this.fmVoice.dispose();
+    try { this.env1Gain.disconnect(); } catch { /* ignore */ }
+    try { this.env2Gain.disconnect(); } catch { /* ignore */ }
+    try { this.env3Gain.disconnect(); } catch { /* ignore */ }
     try { this.voiceGain.disconnect(); } catch { /* ignore */ }
   }
 
@@ -261,25 +315,25 @@ class PolyVoice {
     skipGlide = false,
   ): void {
     const now = Math.max(audioTime, this.ac.currentTime + 0.001);
-    const attack = Math.max(Number.isFinite(p.gainAttack) ? p.gainAttack : 0.001, 0.001);
-    const decay = Math.max(Number.isFinite(p.gainDecay) ? p.gainDecay : 0.1, 0.001);
-    const sustain = Math.max(0, Math.min(1, Number.isFinite(p.gainSustain) ? p.gainSustain : 0.7));
-    const release = Math.max(Number.isFinite(p.gainRelease) ? p.gainRelease : 0.15, 0.02);
-    const attackEnd = now + attack;
-    const releaseStart = Math.max(now + duration, attackEnd + 0.001);
     this.triggeredAt = audioTime;
-    this.releaseEnd = releaseStart + release * 5;
-    this.currentMidiNote = midiNote; // track which note this voice is playing
+    this.currentMidiNote = midiNote;
 
-    // Schedule ADSR (gainScale allows per-note volume from instrument dB)
+    // Set voiceGain to constant peak level (ADSR is on per-osc env nodes)
     const mv = Number.isFinite(p.masterVolume) ? p.masterVolume : 0.75;
     const peak = mv * Math.max(0, gainScale);
     const g = this.voiceGain.gain;
     g.cancelScheduledValues(now);
-    g.setValueAtTime(0, now);
-    g.linearRampToValueAtTime(peak, attackEnd);
-    g.setTargetAtTime(sustain * peak, attackEnd, decay / 5);
-    g.setTargetAtTime(0, releaseStart, release / 5);
+    g.setValueAtTime(peak, now);
+
+    // Per-oscillator ADSR envelopes (normalized 0→1)
+    const e1 = { a: p.gainAttack, d: p.gainDecay, s: p.gainSustain, r: p.gainRelease };
+    const e2 = p.envSync ? e1 : { a: p.env2Attack, d: p.env2Decay, s: p.env2Sustain, r: p.env2Release };
+    const e3 = p.envSync ? e1 : { a: p.env3Attack, d: p.env3Decay, s: p.env3Sustain, r: p.env3Release };
+
+    const re1 = scheduleEnvADSR(this.env1Gain.gain, now, duration, e1.a, e1.d, e1.s, e1.r);
+    const re2 = scheduleEnvADSR(this.env2Gain.gain, now, duration, e2.a, e2.d, e2.s, e2.r);
+    const re3 = scheduleEnvADSR(this.env3Gain.gain, now, duration, e3.a, e3.d, e3.s, e3.r);
+    this.releaseEnd = Math.max(re1, re2, re3);
 
     // Set frequencies with portamento (or trigger FM voice)
     if (p.synthMode === 'fm' && p.fm?.enabled) {
@@ -297,8 +351,9 @@ class PolyVoice {
       this.setFrequencies(midiNote, p, now, skipGlide);
     }
 
-    // Filter envelope
-    this.triggerFilterEnv(p, now, attackEnd);
+    // Filter envelope (uses env1 attack for filter env timing)
+    const env1Attack = Math.max(Number.isFinite(e1.a) ? e1.a : 0.001, 0.001);
+    this.triggerFilterEnv(p, now, now + env1Attack);
   }
 
   setFrequencies(midiNote: number, p: SynthParams, when: number, skipGlide = false): void {
@@ -395,15 +450,21 @@ class PolyVoice {
   }
 
   isIdle(currentTime: number): boolean {
-    return this.voiceGain.gain.value < 0.001 && currentTime >= this.releaseEnd;
+    return currentTime >= this.releaseEnd;
   }
 
   silence(when: number): void {
     this.voiceGain.gain.cancelScheduledValues(when);
     this.voiceGain.gain.setTargetAtTime(0, when, 0.01);
+    this.env1Gain.gain.cancelScheduledValues(when);
+    this.env1Gain.gain.setTargetAtTime(0, when, 0.01);
+    this.env2Gain.gain.cancelScheduledValues(when);
+    this.env2Gain.gain.setTargetAtTime(0, when, 0.01);
+    this.env3Gain.gain.cancelScheduledValues(when);
+    this.env3Gain.gain.setTargetAtTime(0, when, 0.01);
     this.fmVoice.silence(when);
     this.releaseEnd = when + 0.05;
-    this.currentMidiNote = null; // clear note tracking on silence
+    this.currentMidiNote = null;
   }
 }
 
@@ -424,6 +485,7 @@ export class SynthEngine {
   private combFilterNeg: CombFilter;
   private activeFilterType: string = 'lowpass'; // tracks which filter is wired
   private filterEnvGain: GainNode;       // offset for filter envelope
+  private filterEnvSource: ConstantSourceNode; // drives filterEnvGain with value 1
   private distortionNode: Distortion;
   private delayNode: Delay;
   private bitCrusherNode: BitCrusher;
@@ -454,6 +516,10 @@ export class SynthEngine {
 
     this.filterEnvGain = ac.createGain();
     this.filterEnvGain.gain.value = 0;
+    this.filterEnvSource = ac.createConstantSource();
+    this.filterEnvSource.offset.value = 1;
+    this.filterEnvSource.connect(this.filterEnvGain);
+    this.filterEnvSource.start();
 
     this.distortionNode = new Distortion(ac);
     this.delayNode = new Delay(ac);
@@ -538,19 +604,19 @@ export class SynthEngine {
     if (filterType === 'ladder') {
       this.voiceSumNode.connect(this.ladderFilter.getInput());
       connectToDistortion(this.ladderFilter.getOutput());
-      this.filterEnvGain.connect(this.ladderFilter.detune);
+      this.ladderFilter.connectToDetune(this.filterEnvGain);
       this.ladderFilter.setFrequency(this.params.filterFreq);
       this.ladderFilter.setResonance(this.params.filterQ);
     } else if (filterType === 'comb+') {
       this.voiceSumNode.connect(this.combFilterPos.getInput());
       connectToDistortion(this.combFilterPos.getOutput());
-      this.filterEnvGain.connect(this.combFilterPos.detune);
+      // Comb envelope is scheduled directly on delayTime (not via filterEnvGain)
       this.combFilterPos.setFrequency(this.params.filterFreq);
       this.combFilterPos.setResonance(this.params.filterQ);
     } else if (filterType === 'comb-') {
       this.voiceSumNode.connect(this.combFilterNeg.getInput());
       connectToDistortion(this.combFilterNeg.getOutput());
-      this.filterEnvGain.connect(this.combFilterNeg.detune);
+      // Comb envelope is scheduled directly on delayTime (not via filterEnvGain)
       this.combFilterNeg.setFrequency(this.params.filterFreq);
       this.combFilterNeg.setResonance(this.params.filterQ);
     } else {
@@ -626,6 +692,12 @@ export class SynthEngine {
     for (const v of this.voices) {
       v.voiceGain.gain.cancelScheduledValues(now);
       v.voiceGain.gain.setValueAtTime(0, now);
+      v.env1Gain.gain.cancelScheduledValues(now);
+      v.env1Gain.gain.setValueAtTime(0, now);
+      v.env2Gain.gain.cancelScheduledValues(now);
+      v.env2Gain.gain.setValueAtTime(0, now);
+      v.env3Gain.gain.cancelScheduledValues(now);
+      v.env3Gain.gain.setValueAtTime(0, now);
       v.releaseEnd = now;
     }
     this._lastLiveVoice = null;
@@ -640,6 +712,7 @@ export class SynthEngine {
     try { this.voiceSumNode.disconnect(); } catch { /* ignore */ }
     try { this.filterNode.disconnect(); } catch { /* ignore */ }
     try { this.filterEnvGain.disconnect(); } catch { /* ignore */ }
+    try { this.filterEnvSource.stop(); this.filterEnvSource.disconnect(); } catch { /* ignore */ }
     try { this.volumeNode.disconnect(); } catch { /* ignore */ }
   }
 
@@ -653,6 +726,22 @@ export class SynthEngine {
     const attackEnd = now + attack;
     const releaseStart = Math.max(now + duration, attackEnd + 0.001);
 
+    // Comb filters: schedule delay time directly (cents → delay time)
+    if (this.activeFilterType === 'comb+' || this.activeFilterType === 'comb-') {
+      const comb = this.activeFilterType === 'comb+' ? this.combFilterPos : this.combFilterNeg;
+      const baseDelay = 1 / Math.max(20, p.filterFreq);
+      // Convert cents to delay time: negative cents = shorter delay = higher pitch
+      const envDelay = Math.max(0.001, Math.min(0.05,
+        baseDelay * Math.pow(2, -p.filterEnvAmount / 1200)));
+      const dt = comb.getDelayTimeParam();
+      dt.cancelScheduledValues(now);
+      dt.setValueAtTime(envDelay, now);
+      dt.linearRampToValueAtTime(baseDelay, attackEnd > now ? attackEnd : now + 0.001);
+      dt.setTargetAtTime(baseDelay, attackEnd, decay / 5);
+      return;
+    }
+
+    // Biquad / Ladder: modulate via filterEnvGain → detune (cents)
     const d = this.filterEnvGain.gain;
     d.cancelScheduledValues(now);
     d.setValueAtTime(0, now);

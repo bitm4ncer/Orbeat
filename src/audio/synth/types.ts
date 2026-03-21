@@ -109,11 +109,22 @@ export const DEFAULT_FM_PARAMS: FMParams = {
 export interface SynthParams {
   masterVolume: number;
 
-  // Gain envelope (ADSR)
+  // Gain envelope (ADSR) — env1 (VCO)
   gainAttack: number;
   gainDecay: number;
   gainSustain: number;
   gainRelease: number;
+
+  // Per-oscillator envelopes (env1 = gainAttack/Decay/Sustain/Release above)
+  env2Attack: number;    // Sub1 envelope
+  env2Decay: number;
+  env2Sustain: number;
+  env2Release: number;
+  env3Attack: number;    // Sub2 envelope
+  env3Decay: number;
+  env3Sustain: number;
+  env3Release: number;
+  envSync: boolean;      // true = all envelopes linked
 
   // VCO (main oscillator)
   vcoType: string; // OscillatorType or custom wavetable key

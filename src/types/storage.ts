@@ -81,6 +81,8 @@ export interface OrbitrackSet {
   scaleType?: string;
   trackMode?: boolean;
   arrangement?: ArrangementStep[];
+  liveLaunchQuantize?: 1 | 2 | 4 | 8;
+  liveLaunchMode?: 'queue' | 'stack';
 }
 
 // ── Sample Library ────────────────────────────────────────────────────────────
