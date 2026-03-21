@@ -2,9 +2,9 @@ import * as Tone from 'tone';
 import { getAudioContext, getSuperdoughAudioController } from 'superdough';
 import { useStore } from '../state/store';
 import { triggerSuperdough, triggerLooperContinuous } from './superdoughAdapter';
-import { applyOrbitToneEffects } from './orbitEffects';
+import { applyOrbitToneEffects, invalidateSynthRouting } from './orbitEffects';
 import { applySceneEffects, setSceneBusVolume, setSceneBusMuted } from './sceneBus';
-import { syncBpmToEngines } from './synthManager';
+import { syncBpmToEngines, disconnectAllEngines } from './synthManager';
 import { log } from '../logging/logger';
 
 let schedulerId: number | null = null;
@@ -219,6 +219,10 @@ function silenceAll(): void {
 export function stopTransport(): void {
   const transport = Tone.getTransport();
   silenceAll();
+  // Orbit nodes were just destroyed — invalidate synth routing so engines
+  // and standalone inputs reconnect to fresh orbit nodes on next playback.
+  invalidateSynthRouting();
+  disconnectAllEngines();
   stopUISync();
   stopEffectSync();
   transport.stop();

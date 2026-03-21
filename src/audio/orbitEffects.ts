@@ -970,11 +970,12 @@ function ensureIntercepted(orbitIndex: number): OrbitEffectChain {
       // May not be connected yet or already intercepted
     }
 
-    // Also disconnect any standalone synthInputGain that was routing direct
+    // Reroute any standalone synthInputGain through the new chain so that
+    // already-connected synth engines keep producing sound.
     const standaloneSig = _standaloneSynthInputs.get(orbitIndex);
     if (standaloneSig) {
       try { standaloneSig.disconnect(); } catch { /* ignore */ }
-      _standaloneSynthInputs.delete(orbitIndex);
+      standaloneSig.connect(chain.synthInputGain);
     }
 
     summingNode.connect(chain.eqLow);
@@ -1556,6 +1557,21 @@ export function getOrbitChainTail(orbitIndex: number): { limiterMix: GainNode; o
     return { limiterMix: chain.limiterMix, outputNode };
   } catch {
     return null;
+  }
+}
+
+/** Clear all standalone synth inputs and effect chains so they are recreated
+ *  with fresh orbit nodes on next playback.  Called after silenceAll() destroys
+ *  orbit nodes — the old GainNodes point to dead outputs. */
+export function invalidateSynthRouting(): void {
+  for (const [, sig] of _standaloneSynthInputs) {
+    try { sig.disconnect(); } catch { /* ignore */ }
+  }
+  _standaloneSynthInputs.clear();
+
+  // Also destroy all effect chains — their _summingNode / _outputNode refs are stale.
+  for (const idx of [...chains.keys()]) {
+    destroyOrbitChain(idx);
   }
 }
 

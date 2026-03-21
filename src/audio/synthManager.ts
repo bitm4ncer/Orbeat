@@ -95,6 +95,14 @@ export function getActiveSynthCount(): number {
   return engines.size;
 }
 
+/** Mark all engines as disconnected so they reconnect on next noteOn.
+ *  Called when orbit nodes are destroyed (e.g. stopTransport → silenceAll). */
+export function disconnectAllEngines(): void {
+  for (const [, entry] of engines) {
+    entry.connected = false;
+  }
+}
+
 /** Sync BPM to all active ModulationEngines (for tempo-synced LFOs). */
 let _lastSyncedBpm = 0;
 export function syncBpmToEngines(bpm: number): void {
