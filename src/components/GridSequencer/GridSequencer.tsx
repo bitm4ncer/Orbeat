@@ -125,6 +125,7 @@ export function GridSequencer() {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const hoveredHitRef = useRef<{ instrumentId: string; hitIndex: number } | null>(null);
   const velDragRef = useRef<{ hitIndex: number; startY: number; startVel: number } | null>(null);
+  const lastNoteClickRef = useRef<{ step: number; midi: number; time: number } | null>(null);
 
   // Multi-select state
   const [selectedNotes, setSelectedNotes] = useState<Set<string>>(new Set());
@@ -782,7 +783,21 @@ export function GridSequencer() {
         dragRef.current = null;
 
         if (!didDrag) {
-          setSelectedNotes(new Set([key]));
+          const now = Date.now();
+          const last = lastNoteClickRef.current;
+          if (last && last.step === stepIndex && last.midi === midiNote && now - last.time < 300) {
+            // Double-click: delete the note
+            lastNoteClickRef.current = null;
+            const currentNotes = notes[hitIdx] || [];
+            if (currentNotes.length <= 1) {
+              useStore.getState().removeHit(instrument.id, hitIdx);
+            } else {
+              useStore.getState().toggleGridNote(instrument.id, hitIdx, midiNote);
+            }
+          } else {
+            lastNoteClickRef.current = { step: stepIndex, midi: midiNote, time: now };
+            setSelectedNotes(new Set([key]));
+          }
           window.removeEventListener('mousemove', handleMouseMove);
           window.removeEventListener('mouseup', handleMouseUp);
           return;
@@ -1098,15 +1113,6 @@ export function GridSequencer() {
             opacity: noteOpacity,
           }}
           onMouseDown={(e) => handleNoteMouseDown(e, stepIndex, midiNote)}
-          onDoubleClick={(e) => {
-            e.stopPropagation();
-            const currentNotes = notes[hitIdx] || [];
-            if (currentNotes.length <= 1) {
-              useStore.getState().removeHit(instrument.id, hitIdx);
-            } else {
-              useStore.getState().toggleGridNote(instrument.id, hitIdx, midiNote);
-            }
-          }}
         >
           <span
             className="text-[10px] text-black/70 leading-none select-none whitespace-nowrap font-semibold"
