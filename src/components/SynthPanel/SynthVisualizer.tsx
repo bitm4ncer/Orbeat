@@ -43,7 +43,7 @@ interface Props {
 }
 
 export function SynthVisualizer({ orbitIndex, color }: Props) {
-  const [mode, setMode]  = useState<VisMode>('bands');
+  const [mode, setMode]  = useState<VisMode>('line');
   const canvasRef        = useRef<HTMLCanvasElement>(null);
   const containerRef     = useRef<HTMLDivElement>(null);
   const modeRef          = useRef<VisMode>(mode);

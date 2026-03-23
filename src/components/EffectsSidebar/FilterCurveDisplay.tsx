@@ -36,9 +36,17 @@ interface FilterCurveDisplayProps {
   color: string;
   /** Optional callback returning live modulated values { frequency, q }. When provided, the display animates at ~30fps. */
   getModulatedValues?: () => { frequency: number | null; q: number | null };
+  /** Filter envelope amount in cents (-12000 to +12000) */
+  filterEnvAmount?: number;
+  /** Filter envelope attack time in seconds */
+  filterAttack?: number;
+  /** Filter envelope decay time in seconds */
+  filterDecay?: number;
+  /** Whether ring modulation is enabled */
+  ringModEnabled?: boolean;
 }
 
-export function FilterCurveDisplay({ filterType, frequency, q, color, getModulatedValues }: FilterCurveDisplayProps) {
+export function FilterCurveDisplay({ filterType, frequency, q, color, getModulatedValues, filterEnvAmount, filterAttack, filterDecay, ringModEnabled }: FilterCurveDisplayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const filterNodeRef = useRef<BiquadFilterNode | null>(null);
@@ -46,8 +54,8 @@ export function FilterCurveDisplay({ filterType, frequency, q, color, getModulat
   const widthRef = useRef(260);
 
   // Store ALL props in refs so the rAF loop always reads fresh values without restarting
-  const propsRef = useRef({ filterType, frequency, q, color });
-  propsRef.current = { filterType, frequency, q, color };
+  const propsRef = useRef({ filterType, frequency, q, color, filterEnvAmount, filterAttack, filterDecay, ringModEnabled });
+  propsRef.current = { filterType, frequency, q, color, filterEnvAmount, filterAttack, filterDecay, ringModEnabled };
   const getModRef = useRef(getModulatedValues);
   getModRef.current = getModulatedValues;
 
@@ -55,7 +63,7 @@ export function FilterCurveDisplay({ filterType, frequency, q, color, getModulat
     const ctx = ctxRef.current;
     if (!ctx) return;
 
-    const { filterType: ft, frequency: baseFreq, q: baseQ, color: col } = propsRef.current;
+    const { filterType: ft, frequency: baseFreq, q: baseQ, color: col, filterEnvAmount: envAmt, filterAttack: envAtk, filterDecay: envDec, ringModEnabled: rmOn } = propsRef.current;
     const drawFreq = modFreq ?? baseFreq;
     const drawQ = modQ ?? baseQ;
     const isModulated = modFreq != null || modQ != null;
@@ -163,6 +171,59 @@ export function FilterCurveDisplay({ filterType, frequency, q, color, getModulat
         ctx.fillText(`${db}`, W - 2, y + 3);
       }
     }
+
+    // Envelope range indicator
+    if (envAmt && envAmt !== 0) {
+      const envTargetFreq = Math.max(MIN_FREQ, Math.min(MAX_FREQ, baseFreq * Math.pow(2, envAmt / 1200)));
+      const xEnv = freqToX(envTargetFreq, W);
+      const xLeft = Math.min(xBase, xEnv);
+      const xRight = Math.max(xBase, xEnv);
+      const bandW = xRight - xLeft;
+
+      // Shaded sweep range band
+      ctx.fillStyle = `${col}12`;
+      ctx.fillRect(xLeft, 0, bandW, H);
+
+      // Envelope target line (dotted)
+      ctx.strokeStyle = `${col}55`;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([1, 2]);
+      ctx.beginPath(); ctx.moveTo(xEnv, 0); ctx.lineTo(xEnv, H); ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Mini envelope curve inside the band
+      const atk = Math.max(envAtk ?? 0, 0.001);
+      const dec = Math.max(envDec ?? 0.1, 0.001);
+      const totalT = atk + dec * 3; // 3 time constants for visible decay
+      const envH = H * 0.4;
+      const envY0 = H - 4; // bottom baseline
+      const steps = 30;
+      ctx.strokeStyle = `${col}66`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let s = 0; s <= steps; s++) {
+        const t = (s / steps) * totalT;
+        // Envelope value: linear attack, exponential decay
+        let envVal: number;
+        if (t < atk) {
+          envVal = t / atk;
+        } else {
+          envVal = Math.exp(-(t - atk) / (dec / 5));
+        }
+        const x = xLeft + (s / steps) * bandW;
+        const y = envY0 - envVal * envH;
+        if (s === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    // Ring mod indicator badge
+    if (rmOn) {
+      ctx.fillStyle = `${col}cc`;
+      ctx.font = 'bold 8px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText('RM', 3, 10);
+    }
   }, []);
 
   // ResizeObserver — track container width, cache ctx
@@ -212,7 +273,7 @@ export function FilterCurveDisplay({ filterType, frequency, q, color, getModulat
   useEffect(() => {
     if (getModulatedValues) return; // animated loop handles it
     render();
-  }, [filterType, frequency, q, color, getModulatedValues, render]);
+  }, [filterType, frequency, q, color, getModulatedValues, filterEnvAmount, filterAttack, filterDecay, ringModEnabled, render]);
 
   return (
     <div ref={containerRef} className="w-full rounded overflow-hidden" style={{ height: H }}>

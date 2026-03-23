@@ -16,18 +16,42 @@ interface Props {
   warpAmount: number;
   color: string;
   height?: number;
+  /** Optional callback polled at ~30Hz for live LFO-modulated position feedback. */
+  getPosition?: () => number;
 }
 
-export function WavetableDisplay3D({ bankId, position, warpMode, warpAmount, color, height = 120 }: Props) {
+export function WavetableDisplay3D({ bankId, position, warpMode, warpAmount, color, height = 120, getPosition }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  // Cache pre-sampled waveform data so rAF loop only redraws
+  const samplesCache = useRef<{ bankId: string; warpMode: number; warpAmount: number; globalPeak: number } | null>(null);
+
+  // Pre-sample when bank/warp changes
+  useEffect(() => {
+    let globalPeak = 0;
+    for (let f = 0; f < DISPLAY_FRAMES; f++) {
+      const framePos = f / (DISPLAY_FRAMES - 1);
+      const samples = _sampleBuffers[f];
+      for (let j = 0; j < SAMPLES; j++) {
+        const t = j / SAMPLES;
+        samples[j] = sampleWTWaveShape(bankId, framePos, t, warpMode, warpAmount);
+        const absV = Math.abs(samples[j]);
+        if (absV > globalPeak) globalPeak = absV;
+      }
+    }
+    if (globalPeak < 0.001) globalPeak = 1;
+    samplesCache.current = { bankId, warpMode, warpAmount, globalPeak };
+  }, [bankId, warpMode, warpAmount]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
 
-    const render = () => {
+    const draw = (pos: number) => {
+      const cache = samplesCache.current;
+      if (!cache) return;
+
       const W = Math.round(container.clientWidth) || 260;
       const H = height;
       canvas.width = W;
@@ -36,61 +60,40 @@ export function WavetableDisplay3D({ bankId, position, warpMode, warpAmount, col
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      // Background
       ctx.fillStyle = BG;
       ctx.fillRect(0, 0, W, H);
 
-      // Layout constants
       const padX = 8;
       const padTop = 12;
       const padBottom = 10;
-      const totalXSkew = W * 0.08;          // total horizontal shift across all layers
+      const totalXSkew = W * 0.08;
       const xSkew = totalXSkew / (DISPLAY_FRAMES - 1);
-      const yStep = (H - padTop - padBottom) / (DISPLAY_FRAMES + 2); // vertical spacing per frame
-      const waveAmp = yStep * 1.8;          // waveform amplitude
-      const rightEdge = W - padX;           // all frames share same right edge
+      const yStep = (H - padTop - padBottom) / (DISPLAY_FRAMES + 2);
+      const waveAmp = yStep * 1.8;
+      const rightEdge = W - padX;
 
-      // Find which display frame is closest to current position
-      const activeIdx = Math.round(position * (DISPLAY_FRAMES - 1));
+      const activeIdx = Math.round(pos * (DISPLAY_FRAMES - 1));
 
-      // Pre-sample all frames for global peak normalization (reuse pre-allocated buffers)
-      let globalPeak = 0;
-      for (let f = 0; f < DISPLAY_FRAMES; f++) {
-        const framePos = f / (DISPLAY_FRAMES - 1);
-        const samples = _sampleBuffers[f];
-        for (let j = 0; j < SAMPLES; j++) {
-          const t = j / SAMPLES;
-          samples[j] = sampleWTWaveShape(bankId, framePos, t, warpMode, warpAmount);
-          const absV = Math.abs(samples[j]);
-          if (absV > globalPeak) globalPeak = absV;
-        }
-      }
-      if (globalPeak < 0.001) globalPeak = 1;
-
-      // Draw frames back-to-front (painter's algorithm)
       for (let f = 0; f < DISPLAY_FRAMES; f++) {
         const isActive = f === activeIdx;
         const samples = _sampleBuffers[f];
         const xOff = padX + (DISPLAY_FRAMES - 1 - f) * xSkew;
         const yBase = H - padBottom - f * yStep;
 
-        // Build waveform path points — each frame extends to shared rightEdge
         const frameWidth = rightEdge - xOff;
         const points: { x: number; y: number }[] = [];
         for (let j = 0; j <= SAMPLES; j++) {
           const jc = Math.min(j, SAMPLES - 1);
           const t = jc / SAMPLES;
-          const val = samples[jc] / globalPeak;
+          const val = samples[jc] / cache.globalPeak;
           const x = xOff + t * frameWidth;
           const y = yBase - val * waveAmp;
           points.push({ x, y });
         }
 
-        // Depth fade: back frames are dimmer, front frames brighter
         const depthAlpha = 0.12 + 0.28 * (f / (DISPLAY_FRAMES - 1));
         const hexAlpha = Math.round(depthAlpha * 255).toString(16).padStart(2, '0');
 
-        // Active frame: colored fill under waveform
         if (isActive) {
           ctx.beginPath();
           ctx.moveTo(points[0].x, yBase);
@@ -101,7 +104,6 @@ export function WavetableDisplay3D({ bankId, position, warpMode, warpAmount, col
           ctx.fill();
         }
 
-        // Waveform stroke
         ctx.beginPath();
         ctx.moveTo(points[0].x, points[0].y);
         for (let j = 1; j < points.length; j++) {
@@ -125,12 +127,32 @@ export function WavetableDisplay3D({ bankId, position, warpMode, warpAmount, col
       }
     };
 
-    render();
+    // Initial draw
+    draw(getPosition ? getPosition() : position);
 
-    const ro = new ResizeObserver(() => render());
+    // rAF loop for live modulation feedback
+    let rafId = 0;
+    let lastActiveIdx = -1;
+    if (getPosition) {
+      const tick = () => {
+        const pos = getPosition();
+        const idx = Math.round(pos * (DISPLAY_FRAMES - 1));
+        if (idx !== lastActiveIdx) {
+          lastActiveIdx = idx;
+          draw(pos);
+        }
+        rafId = requestAnimationFrame(tick);
+      };
+      rafId = requestAnimationFrame(tick);
+    }
+
+    const ro = new ResizeObserver(() => draw(getPosition ? getPosition() : position));
     ro.observe(container);
-    return () => ro.disconnect();
-  }, [bankId, position, warpMode, warpAmount, color, height]);
+    return () => {
+      ro.disconnect();
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [bankId, position, warpMode, warpAmount, color, height, getPosition]);
 
   return (
     <div ref={containerRef} className="w-full rounded overflow-hidden" style={{ height }}>

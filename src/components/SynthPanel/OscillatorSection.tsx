@@ -37,6 +37,8 @@ interface OscillatorSectionProps {
   modProps: (key: keyof SynthParams, label: string) => ModPropsResult;
   compact?: boolean;
   children?: React.ReactNode;
+  /** Optional callback for live LFO-modulated wavetable position feedback. */
+  getWtPosition?: () => number;
 }
 
 // ─── Param key mapping ──────────────────────────────────────────────────────
@@ -98,7 +100,7 @@ const sectionHeaderStyle: React.CSSProperties = {
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
-export function OscillatorSection({ oscIndex, params, color, set, modProps, compact, children }: OscillatorSectionProps) {
+export function OscillatorSection({ oscIndex, params, color, set, modProps, compact, children, getWtPosition }: OscillatorSectionProps) {
   const keys = getOscKeys(oscIndex);
   const isMain = oscIndex === 1;
   const initialGain = safeNum(params[keys.gain], isMain ? 1 : 0);
@@ -240,8 +242,8 @@ export function OscillatorSection({ oscIndex, params, color, set, modProps, comp
             <>
               <div className="text-[8px] text-text-secondary/50 px-1 py-1">Karplus-Strong physical modeling</div>
               <div className="flex justify-around items-end gap-1">
-                <EffectKnob label="Damp" value={safeNum(params[keys.stringDamping!], 4000)} min={200} max={12000} step={50} unit="Hz" defaultValue={4000} color={color} size="sm" onChange={(v) => set(keys.stringDamping!, v as never)} />
-                <EffectKnob label="Decay" value={safeNum(params[keys.stringDecay!], 0.995)} min={0.9} max={0.999} step={0.001} defaultValue={0.995} color={color} size="sm" onChange={(v) => set(keys.stringDecay!, v as never)} />
+                <EffectKnob label="Damp" value={safeNum(params[keys.stringDamping!], 4000)} min={200} max={12000} step={50} unit="Hz" defaultValue={4000} color={color} size="sm" onChange={(v) => set(keys.stringDamping!, v as never)} {...modProps(keys.stringDamping!, 'Damp')} />
+                <EffectKnob label="Decay" value={safeNum(params[keys.stringDecay!], 0.995)} min={0.9} max={0.999} step={0.001} defaultValue={0.995} color={color} size="sm" onChange={(v) => set(keys.stringDecay!, v as never)} {...modProps(keys.stringDecay!, 'Decay')} />
               </div>
             </>
           ) : isWT ? (
@@ -319,6 +321,7 @@ export function OscillatorSection({ oscIndex, params, color, set, modProps, comp
                     warpAmount={safeNum(params[keys.wtWarpAmount!], 0)}
                     color={color}
                     height={compact ? 90 : 120}
+                    getPosition={getWtPosition}
                   />
                 </div>
                 <div className="flex flex-col justify-center gap-2">

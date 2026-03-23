@@ -81,9 +81,23 @@ export class LadderFilter {
     return this.stages[0].frequency;
   }
 
-  /** Get the detune AudioParam of the first stage (for filter envelope modulation) */
+  /** Get the detune AudioParam of the first stage */
   get detune(): AudioParam {
     return this.stages[0].detune;
+  }
+
+  /** Connect an audio source to all 4 stages' detune for proper envelope modulation */
+  connectToDetune(source: AudioNode): void {
+    for (const stage of this.stages) {
+      source.connect(stage.detune);
+    }
+  }
+
+  /** Disconnect an audio source from all 4 stages' detune */
+  disconnectFromDetune(source: AudioNode): void {
+    for (const stage of this.stages) {
+      try { source.disconnect(stage.detune); } catch { /* ignore */ }
+    }
   }
 
   setFrequency(freq: number): void {

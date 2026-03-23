@@ -46,6 +46,9 @@ function ensureDefaults(p: Partial<SynthParams>): SynthParams {
   if (p.unisonDrift === undefined) p.unisonDrift = 0;
   if (p.portamentoCurve === undefined) p.portamentoCurve = 'exp';
   if (p.portamentoLegato === undefined) p.portamentoLegato = false;
+  if (p.filterAttack === undefined) p.filterAttack = 0;
+  if (p.filterDecay === undefined) p.filterDecay = 0.1;
+  if (p.portamentoSpeed === undefined) p.portamentoSpeed = 0;
   if (p.ringModEnabled === undefined) p.ringModEnabled = false;
   if (p.ringModMix === undefined) p.ringModMix = 0.5;
   if (p.stringDamping === undefined) p.stringDamping = 4000;
@@ -635,6 +638,23 @@ export class SynthEngine {
 
   // ─── Note Triggering ───────────────────────────────────────────────────────
 
+  /** Return params with LFO-modulated overrides for noteOn-sensitive values
+   *  (portamentoSpeed, stringDamping, stringDecay).  Returns base params when
+   *  no modulation is active to avoid unnecessary object creation. */
+  private noteOnParams(): SynthParams {
+    const p = this.params;
+    const ps = this.modEngine.getModulatedValue('portamentoSpeed');
+    const sd = this.modEngine.getModulatedValue('stringDamping');
+    const sdc = this.modEngine.getModulatedValue('stringDecay');
+    if (ps === null && sd === null && sdc === null) return p;
+    return {
+      ...p,
+      ...(ps !== null && { portamentoSpeed: ps }),
+      ...(sd !== null && { stringDamping: sd }),
+      ...(sdc !== null && { stringDecay: sdc }),
+    };
+  }
+
   noteOn(midiNote: number, audioTime: number, duration: number, gainScale = 1): void {
     // Legato check: skip glide if no voice is currently playing
     const hasPlaying = this.params.portamentoLegato
@@ -642,7 +662,7 @@ export class SynthEngine {
       : true;
     const skipGlide = this.params.portamentoLegato && !hasPlaying;
     const voice = this.getOrStealVoice(audioTime);
-    voice.trigger(midiNote, audioTime, duration, this.params, gainScale, skipGlide);
+    voice.trigger(midiNote, audioTime, duration, this.noteOnParams(), gainScale, skipGlide);
     this.scheduleFilterEnv(audioTime, duration);
     this.modEngine.onNoteOn(audioTime);
   }
@@ -650,16 +670,15 @@ export class SynthEngine {
   /** Called from SynthPanel for live keyboard/mouse playback (no scheduled time). */
   noteOnNow(midiNote: number, velocity?: number): void {
     const now = this.ac.currentTime;
-    const p = this.params;
     // Legato check
-    const hasPlaying = p.portamentoLegato
+    const hasPlaying = this.params.portamentoLegato
       ? this.voices.some(v => !v.isIdle(now))
       : true;
-    const skipGlide = p.portamentoLegato && !hasPlaying;
+    const skipGlide = this.params.portamentoLegato && !hasPlaying;
     const voice = this.getOrStealVoice(now);
     // Convert velocity (0-127) to gainScale (0-1); default 1 if not provided
     const gainScale = velocity !== undefined ? Math.max(0, velocity / 127) : 1;
-    voice.trigger(midiNote, now, 10, p, gainScale, skipGlide); // 10s sustain — noteOff stops it
+    voice.trigger(midiNote, now, 10, this.noteOnParams(), gainScale, skipGlide); // 10s sustain — noteOff stops it
     this._lastLiveVoice = voice;
     this.scheduleFilterEnv(now, 10);
     this.modEngine.onNoteOn();
@@ -721,8 +740,8 @@ export class SynthEngine {
     if (!p.filterEnvAmount) return;
 
     const now = Math.max(audioTime, this.ac.currentTime + 0.001);
-    const attack = Math.max(p.filterAttack, 0.001);
-    const decay = Math.max(p.filterDecay, 0.001);
+    const attack = Math.max(this.modEngine.getModulatedValue('filterAttack') ?? p.filterAttack, 0.001);
+    const decay = Math.max(this.modEngine.getModulatedValue('filterDecay') ?? p.filterDecay, 0.001);
     const attackEnd = now + attack;
     const releaseStart = Math.max(now + duration, attackEnd + 0.001);
 
@@ -882,8 +901,15 @@ export class SynthEngine {
       case 'portamentoCurve':
       case 'portamentoLegato':
       case 'stringDamping':
+        for (const voice of this.voices) voice.stringOsc.setDamping(v);
+        break;
       case 'stringDecay':
-        // These take effect on next noteOn
+        for (const voice of this.voices) voice.stringOsc.setDecay(v);
+        break;
+      case 'filterAttack':
+      case 'filterDecay':
+      case 'portamentoSpeed':
+        // Picked up by scheduleFilterEnv / setFrequencies via getModulatedValue
         break;
       case 'ringModEnabled':
       case 'ringModMix':

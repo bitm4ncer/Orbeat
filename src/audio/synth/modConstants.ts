@@ -26,6 +26,9 @@ export const MOD_PARAM_META: Partial<Record<keyof SynthParams, ParamMeta>> = {
   filterFreq:    { min: 20, max: 20000, label: 'Cutoff', unit: 'Hz', audioRate: true },
   filterQ:       { min: 0, max: 20,     label: 'Reso' },
   filterEnvAmount: { min: -12000, max: 12000, label: 'Filt Env' },
+  filterAttack:  { min: 0, max: 2,      label: 'Filt Atk', unit: 's' },
+  filterDecay:   { min: 0.001, max: 2,  label: 'Filt Dec', unit: 's' },
+  ringModMix:    { min: 0, max: 1,      label: 'Ring Mix' },
 
   // Sub oscillators
   sub1Gain:      { min: 0, max: 1, label: 'Sub1 Gain' },
@@ -58,6 +61,13 @@ export const MOD_PARAM_META: Partial<Record<keyof SynthParams, ParamMeta>> = {
   // Bit Crusher
   bitCrushDepth:  { min: 1, max: 16, label: 'Bit Depth' },
   bitCrushAmount: { min: 0, max: 1,  label: 'Crush Amt' },
+
+  // String oscillator
+  stringDamping:  { min: 200, max: 12000, label: 'Damp', unit: 'Hz' },
+  stringDecay:    { min: 0.9, max: 0.999, label: 'Str Decay' },
+
+  // Glide
+  portamentoSpeed: { min: 0, max: 0.5, label: 'Glide', unit: 's' },
 
   // Master
   masterVolume:   { min: 0, max: 1, label: 'Volume' },

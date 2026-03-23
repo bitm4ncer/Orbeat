@@ -84,7 +84,7 @@ export function FilterSection({ params, color, set, modProps, getModulatedValue 
         <div className="flex items-center gap-2">
           <EffectKnob label="Freq" value={params.filterFreq} min={20} max={20000} step={10} unit="Hz" defaultValue={8000} color={color} size="md" onChange={(v) => set('filterFreq', v)} {...modProps('filterFreq', 'Freq')} />
           <div style={displayStyle} className="flex-1 min-w-0">
-            <FilterCurveDisplay filterType={filterTypeIdx >= 0 ? filterTypeIdx : 0} frequency={params.filterFreq} q={params.filterQ} color={color} getModulatedValues={getModulatedValue ? getModulatedFilterValues : undefined} />
+            <FilterCurveDisplay filterType={filterTypeIdx >= 0 ? filterTypeIdx : 0} frequency={params.filterFreq} q={params.filterQ} color={color} getModulatedValues={getModulatedValue ? getModulatedFilterValues : undefined} filterEnvAmount={params.filterEnvAmount} filterAttack={params.filterAttack} filterDecay={params.filterDecay} ringModEnabled={params.ringModEnabled} />
           </div>
           <EffectKnob label="Q" value={params.filterQ} min={0} max={20} defaultValue={0} color={color} size="md" onChange={(v) => set('filterQ', v)} {...modProps('filterQ', 'Q')} />
         </div>
@@ -92,8 +92,8 @@ export function FilterSection({ params, color, set, modProps, getModulatedValue 
         {/* Filter knobs */}
         <div className="flex justify-around items-end gap-1">
           <EffectKnob label="Env" value={params.filterEnvAmount} min={-12000} max={12000} step={10} unit="¢" defaultValue={0} color={color} size="sm" onChange={(v) => set('filterEnvAmount', v)} {...modProps('filterEnvAmount', 'Env')} />
-          <EffectKnob label="Atk" value={params.filterAttack} min={0} max={2} unit="s" defaultValue={0} color={color} size="sm" onChange={(v) => set('filterAttack', v)} />
-          <EffectKnob label="Dec" value={params.filterDecay} min={0.001} max={2} unit="s" defaultValue={0.1} color={color} size="sm" onChange={(v) => set('filterDecay', v)} />
+          <EffectKnob label="Atk" value={params.filterAttack} min={0} max={2} unit="s" defaultValue={0} color={color} size="sm" onChange={(v) => set('filterAttack', v)} {...modProps('filterAttack', 'Atk')} />
+          <EffectKnob label="Dec" value={params.filterDecay} min={0.001} max={2} unit="s" defaultValue={0.1} color={color} size="sm" onChange={(v) => set('filterDecay', v)} {...modProps('filterDecay', 'Dec')} />
         </div>
 
         {/* Ring Mod */}
@@ -110,7 +110,7 @@ export function FilterSection({ params, color, set, modProps, getModulatedValue 
             Ring Mod
           </button>
           {params.ringModEnabled && (
-            <EffectKnob label="Mix" value={params.ringModMix ?? 0.5} min={0} max={1} defaultValue={0.5} color={color} size="sm" onChange={(v) => set('ringModMix', v)} />
+            <EffectKnob label="Mix" value={params.ringModMix ?? 0.5} min={0} max={1} defaultValue={0.5} color={color} size="sm" onChange={(v) => set('ringModMix', v)} {...modProps('ringModMix', 'Mix')} />
           )}
         </div>
       </div>}

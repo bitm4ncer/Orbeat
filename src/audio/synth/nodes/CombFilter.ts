@@ -63,10 +63,14 @@ export class CombFilter {
     return this.outputNode;
   }
 
-  /** Get delay time AudioParam for direct connections */
-  get detune(): AudioParam {
-    // Comb filter doesn't use detune — return damping filter detune as stub
-    return this.dampingFilter.detune;
+  /** Get the delayTime AudioParam for direct envelope scheduling */
+  getDelayTimeParam(): AudioParam {
+    return this.delayNode.delayTime;
+  }
+
+  /** Get current base delay time from frequency */
+  getBaseDelayTime(): number {
+    return this.delayNode.delayTime.value;
   }
 
   /** Set pitch frequency — maps to delay time (1/freq) */

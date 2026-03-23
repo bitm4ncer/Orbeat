@@ -1,4 +1,4 @@
-import { useState, useMemo, useReducer, useEffect, useRef, useLayoutEffect } from 'react';
+import { useState, useMemo, useReducer, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { useStore } from '../../state/store';
 import { getSynthEngine } from '../../audio/synthManager';
@@ -161,7 +161,7 @@ function InlineEnvelope({
 
 function FloatingLayout({
   params, color, set, modProps, engine, instrument, currentPresetName,
-  updateEngineParams, forceUpdate, lfoContent,
+  updateEngineParams, forceUpdate, lfoContent, getWtPosition,
 }: {
   params: SynthParams;
   color: string;
@@ -178,6 +178,7 @@ function FloatingLayout({
   updateEngineParams: (id: string, params: SynthParams) => void;
   forceUpdate: () => void;
   lfoContent: (compact?: boolean) => React.ReactNode;
+  getWtPosition: () => number;
 }) {
   const [headerTarget, setHeaderTarget] = useState<HTMLElement | null>(null);
   const [modeTarget, setModeTarget] = useState<HTMLElement | null>(null);
@@ -322,7 +323,7 @@ function FloatingLayout({
                   env sync
                 </button>
               </div>
-              <OscillatorSection oscIndex={1} params={params} color={color} set={set} modProps={modProps}>
+              <OscillatorSection oscIndex={1} params={params} color={color} set={set} modProps={modProps} getWtPosition={getWtPosition}>
                 <InlineEnvelope
                   label="env 1" color={color}
                   attack={params.gainAttack} decay={params.gainDecay}
@@ -575,6 +576,12 @@ export function SynthPanel() {
     return items;
   };
 
+  // Stable callback for WavetableDisplay3D to poll modulated WT position at ~30Hz
+  const getWtPosition = useCallback(() => {
+    if (!engine) return params.wtPosition ?? 0;
+    return engine.getModulatedValue('wtPosition') ?? params.wtPosition ?? 0;
+  }, [engine, params.wtPosition]);
+
   // ─── Shared section content renderers (used by both narrow & wide layouts) ──
 
   const oscContent = () => {
@@ -607,8 +614,8 @@ export function SynthPanel() {
           <>
             <div className="text-[8px] text-text-secondary/50 px-1 py-1">Karplus-Strong physical modeling</div>
             <KnobRow>
-              <SynthKnob label="Damp" value={params.stringDamping ?? 4000} min={200} max={12000} step={50} unit="Hz" defaultValue={4000} color={color} onChange={(v) => set('stringDamping', v)} />
-              <SynthKnob label="Decay" value={params.stringDecay ?? 0.995} min={0.9} max={0.999} step={0.001} defaultValue={0.995} color={color} onChange={(v) => set('stringDecay', v)} />
+              <SynthKnob label="Damp" value={params.stringDamping ?? 4000} min={200} max={12000} step={50} unit="Hz" defaultValue={4000} color={color} onChange={(v) => set('stringDamping', v)} {...modProps('stringDamping', 'Damp')} />
+              <SynthKnob label="Decay" value={params.stringDecay ?? 0.995} min={0.9} max={0.999} step={0.001} defaultValue={0.995} color={color} onChange={(v) => set('stringDecay', v)} {...modProps('stringDecay', 'Decay')} />
             </KnobRow>
           </>
         ) : isWT ? (
@@ -651,7 +658,7 @@ export function SynthPanel() {
         {isWT ? (
           <div className="flex gap-1.5 items-stretch">
             <div className="flex-1 min-w-0" style={{ border: '1px solid rgba(255,255,255,0.06)', borderRadius: 4, overflow: 'hidden' }}>
-              <WavetableDisplay3D bankId={bankId} position={params.wtPosition ?? 0} warpMode={params.wtWarpMode ?? 0} warpAmount={params.wtWarpAmount ?? 0} color={color} height={100} />
+              <WavetableDisplay3D bankId={bankId} position={params.wtPosition ?? 0} warpMode={params.wtWarpMode ?? 0} warpAmount={params.wtWarpAmount ?? 0} color={color} height={100} getPosition={getWtPosition} />
             </div>
             <div className="flex flex-col justify-center gap-2">
               <SynthKnob label="Pos" value={params.wtPosition ?? 0} min={0} max={1} step={0.005} defaultValue={0} color={color} onChange={(v) => set('wtPosition', v)} {...modProps('wtPosition', 'Pos')} />
@@ -760,7 +767,7 @@ export function SynthPanel() {
           Ring Mod
         </button>
         {params.ringModEnabled && (
-          <SynthKnob label="Mix" value={params.ringModMix ?? 0.5} min={0} max={1} defaultValue={0.5} color={color} onChange={(v) => set('ringModMix', v)} />
+          <SynthKnob label="Mix" value={params.ringModMix ?? 0.5} min={0} max={1} defaultValue={0.5} color={color} onChange={(v) => set('ringModMix', v)} {...modProps('ringModMix', 'Mix')} />
         )}
       </div>
       <span className="text-[8px] text-text-secondary/60 uppercase tracking-wider mt-1">Sub 2</span>
@@ -809,8 +816,8 @@ export function SynthPanel() {
         <SynthKnob label="Env" value={params.filterEnvAmount} min={-12000} max={12000} step={10} unit="¢" defaultValue={0} color={color} onChange={(v) => set('filterEnvAmount', v)} {...modProps('filterEnvAmount', 'Env')} />
       </KnobRow>
       <KnobRow>
-        <SynthKnob label="Atk" value={params.filterAttack} min={0} max={2} unit="s" defaultValue={0} color={color} onChange={(v) => set('filterAttack', v)} />
-        <SynthKnob label="Dec" value={params.filterDecay} min={0.001} max={2} unit="s" defaultValue={0.1} color={color} onChange={(v) => set('filterDecay', v)} />
+        <SynthKnob label="Atk" value={params.filterAttack} min={0} max={2} unit="s" defaultValue={0} color={color} onChange={(v) => set('filterAttack', v)} {...modProps('filterAttack', 'Atk')} />
+        <SynthKnob label="Dec" value={params.filterDecay} min={0.001} max={2} unit="s" defaultValue={0.1} color={color} onChange={(v) => set('filterDecay', v)} {...modProps('filterDecay', 'Dec')} />
       </KnobRow>
     </>
   );
@@ -888,7 +895,7 @@ export function SynthPanel() {
     <>
       <KnobRow>
         <SynthKnob label="Vol" value={params.masterVolume} min={0} max={1} defaultValue={0.75} color={color} size="md" onChange={(v) => set('masterVolume', v)} {...modProps('masterVolume', 'Vol')} />
-        <SynthKnob label="Glide" value={params.portamentoSpeed} min={0} max={0.5} unit="s" defaultValue={0} color={color} size="md" onChange={(v) => set('portamentoSpeed', v)} />
+        <SynthKnob label="Glide" value={params.portamentoSpeed} min={0} max={0.5} unit="s" defaultValue={0} color={color} size="md" onChange={(v) => set('portamentoSpeed', v)} {...modProps('portamentoSpeed', 'Glide')} />
       </KnobRow>
       {params.portamentoSpeed > 0 && (
         <>
@@ -982,6 +989,7 @@ export function SynthPanel() {
             updateEngineParams={updateEngineParams}
             forceUpdate={forceUpdate}
             lfoContent={lfoContent}
+            getWtPosition={getWtPosition}
           />
         ) : (
           /* ═══════════════════ NARROW MODE: original stacked layout ═════════════ */

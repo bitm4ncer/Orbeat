@@ -444,7 +444,7 @@ export function FXSection({ params, color, set, modProps }: FXSectionProps) {
   const masterColumn = (
     <div className="flex items-center justify-center gap-2 shrink-0" style={{ borderLeft: '1px solid rgba(255,255,255,0.06)', paddingLeft: 8 }}>
       <div className="flex flex-col items-center gap-1">
-        <EffectKnob label="Glide" value={params.portamentoSpeed} min={0} max={0.5} unit="s" defaultValue={0} color={color} size="sm" onChange={(v) => set('portamentoSpeed', v)} />
+        <EffectKnob label="Glide" value={params.portamentoSpeed} min={0} max={0.5} unit="s" defaultValue={0} color={color} size="sm" onChange={(v) => set('portamentoSpeed', v)} {...modProps('portamentoSpeed', 'Glide')} />
         <EffectKnob label="Vol" value={params.masterVolume} min={0} max={1} defaultValue={0.75} color={color} size="sm" onChange={(v) => set('masterVolume', v)} {...modProps('masterVolume', 'Vol')} />
       </div>
       {params.portamentoSpeed > 0 && (
