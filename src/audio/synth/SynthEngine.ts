@@ -900,6 +900,7 @@ export class SynthEngine {
       case 'fmDepth':
       case 'portamentoCurve':
       case 'portamentoLegato':
+        break;
       case 'stringDamping':
         for (const voice of this.voices) voice.stringOsc.setDamping(v);
         break;
