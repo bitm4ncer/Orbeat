@@ -6,7 +6,7 @@ arrange instruments on a circular grid, sequence them on a step
 sequencer, shape the sound with a synth panel or sample bank,
 and process through a per-instrument effects chain.
 
-[https://orbitrack.app](https://orbitrack.app)
+[https://orbitrack.app](orbitrack.app)
 
 ---
 
