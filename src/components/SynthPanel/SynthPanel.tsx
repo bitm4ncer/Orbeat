@@ -106,6 +106,13 @@ const WAVE_LABELS = ['SIN', 'TRI', 'SQR', 'SAW'];
 const FILTER_TYPES: string[] = ['lowpass', 'highpass', 'bandpass', 'notch', 'ladder', 'comb+', 'comb-'];
 const FILTER_LABELS = ['LP', 'HP', 'BP', 'NT', 'LDR', 'CMB+', 'CMB-'];
 
+// Per-envelope param key map (shared by narrow + floating layouts)
+const ENV_PARAM_MAPS = {
+  1: { attack: 'gainAttack', decay: 'gainDecay', sustain: 'gainSustain', release: 'gainRelease' },
+  2: { attack: 'env2Attack', decay: 'env2Decay', sustain: 'env2Sustain', release: 'env2Release' },
+  3: { attack: 'env3Attack', decay: 'env3Decay', sustain: 'env3Sustain', release: 'env3Release' },
+} as const;
+
 // ─── Inline envelope for floating OSC sections ─────────────────────────────
 
 const envDisplayStyle: React.CSSProperties = {
@@ -161,7 +168,7 @@ function InlineEnvelope({
 
 function FloatingLayout({
   params, color, set, modProps, engine, instrument, currentPresetName,
-  updateEngineParams, forceUpdate, lfoContent, getWtPosition,
+  updateEngineParams, forceUpdate, lfoContent, getWtPosition, envOnChange,
 }: {
   params: SynthParams;
   color: string;
@@ -179,6 +186,7 @@ function FloatingLayout({
   forceUpdate: () => void;
   lfoContent: (compact?: boolean) => React.ReactNode;
   getWtPosition: () => number;
+  envOnChange: (envIndex: 1 | 2 | 3, k: 'attack' | 'decay' | 'sustain' | 'release', v: number) => void;
 }) {
   const [headerTarget, setHeaderTarget] = useState<HTMLElement | null>(null);
   const [modeTarget, setModeTarget] = useState<HTMLElement | null>(null);
@@ -195,22 +203,6 @@ function FloatingLayout({
     const rightEl = document.getElementById('synth-float-header-right');
     if (rightEl) setRightTarget(rightEl);
   }, []);
-
-  const envParamMaps = {
-    1: { attack: 'gainAttack', decay: 'gainDecay', sustain: 'gainSustain', release: 'gainRelease' },
-    2: { attack: 'env2Attack', decay: 'env2Decay', sustain: 'env2Sustain', release: 'env2Release' },
-    3: { attack: 'env3Attack', decay: 'env3Decay', sustain: 'env3Sustain', release: 'env3Release' },
-  } as const;
-
-  const envOnChange = (envIndex: 1 | 2 | 3, k: 'attack' | 'decay' | 'sustain' | 'release', v: number) => {
-    if (params.envSync) {
-      set(envParamMaps[1][k], v);
-      set(envParamMaps[2][k], v);
-      set(envParamMaps[3][k], v);
-    } else {
-      set(envParamMaps[envIndex][k], v);
-    }
-  };
 
   const toggleEnvSync = () => {
     const newSync = !params.envSync;
@@ -462,6 +454,16 @@ export function SynthPanel() {
     if (!storeFlushTimer.current) {
       storeFlushTimer.current = setTimeout(flushToStore, 80);
       pendingStoreFlush.current = true;
+    }
+  };
+
+  const envOnChange = (envIndex: 1 | 2 | 3, k: 'attack' | 'decay' | 'sustain' | 'release', v: number) => {
+    if (params.envSync) {
+      set(ENV_PARAM_MAPS[1][k], v);
+      set(ENV_PARAM_MAPS[2][k], v);
+      set(ENV_PARAM_MAPS[3][k], v);
+    } else {
+      set(ENV_PARAM_MAPS[envIndex][k], v);
     }
   };
 
@@ -990,11 +992,12 @@ export function SynthPanel() {
             forceUpdate={forceUpdate}
             lfoContent={lfoContent}
             getWtPosition={getWtPosition}
+            envOnChange={envOnChange}
           />
         ) : (
           /* ═══════════════════ NARROW MODE: original stacked layout ═════════════ */
           <div className="flex flex-col flex-1 min-h-0">
-            <div className="shrink-0" style={{ borderBottom: `1px solid ${color}20` }}>
+            <div className="shrink-0" style={{ borderBottom: `1px solid ${color}20`, height: 80 }}>
               <SynthVisualizer orbitIndex={instrument.orbitIndex} color={color} />
             </div>
             <div className="flex items-center gap-2 px-4 py-2 shrink-0 bg-bg-secondary z-10" style={{ borderBottom: `1px solid ${color}30` }}>

@@ -2,7 +2,7 @@ import * as Tone from 'tone';
 import { getAudioContext, getSuperdoughAudioController } from 'superdough';
 import { useStore } from '../state/store';
 import { triggerSuperdough, triggerLooperContinuous } from './superdoughAdapter';
-import { applyOrbitToneEffects, invalidateSynthRouting } from './orbitEffects';
+import { applyOrbitToneEffects, invalidateSynthRouting, clearOrbitAnalysers } from './orbitEffects';
 import { applySceneEffects, setSceneBusVolume, setSceneBusMuted } from './sceneBus';
 import { syncBpmToEngines, disconnectAllEngines } from './synthManager';
 import { log } from '../logging/logger';
@@ -213,6 +213,10 @@ function silenceAll(): void {
       try { (orbit as any).disconnect(); } catch { /* ok */ }
     }
     controller.nodes = {};
+    // Visualizer analysers were side-tapped on the old orbit outputs; those
+    // outputs are now disconnected. Drop the cache so the next frame creates
+    // fresh analysers attached to the newly recreated orbit outputs.
+    clearOrbitAnalysers();
   } catch { /* graceful fallback */ }
 }
 

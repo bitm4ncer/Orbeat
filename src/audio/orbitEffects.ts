@@ -296,6 +296,16 @@ export function getOrbitAnalyser(orbitIndex: number): AnalyserNode | null {
   }
 }
 
+/** Drop all cached analysers. Call when orbit output nodes are destroyed (e.g. on
+ *  transport stop) so the next getOrbitAnalyser() re-taps the freshly recreated
+ *  orbit output instead of a silent orphaned node. */
+export function clearOrbitAnalysers(): void {
+  for (const a of orbitAnalysers.values()) {
+    try { a.disconnect(); } catch { /* ignore */ }
+  }
+  orbitAnalysers.clear();
+}
+
 /**
  * Build a WaveShaperNode curve that quantizes to 2^bits discrete steps.
  * At bits=16, the curve is effectively linear (full resolution).
