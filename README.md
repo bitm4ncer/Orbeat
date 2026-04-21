@@ -18,7 +18,6 @@ and process through a per-instrument effects chain.
 - audio input recording from mic / interface (mono & stereo, monitor mode)
 - midi i/o — clock sync (in/out), cc learn for any knob, note input & recording
 - url track sharing, .orb file export/import
-- ai-assisted pattern generation (ollama / claude / custom llm)
 
 ---
 
