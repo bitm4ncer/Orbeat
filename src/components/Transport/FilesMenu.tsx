@@ -8,6 +8,7 @@ import { gzipAsync, toBase64Url, strToU8 } from '../../storage/compressionUtils'
 import { setLastSetId } from '../../storage/sessionAutosave';
 import { encodeSetToUrl, buildShareUrl, exportSamplesZip, importSamplesZip } from '../../storage/urlShare';
 import { copyToClipboard } from '../../utils/clipboard';
+import { track } from '../../utils/analytics';
 import type { OrbitrackSet, SetVersionEntry } from '../../types/storage';
 import { SaveSetDialog } from './SaveSetDialog';
 import { OpenSetDialog } from './OpenSetDialog';
@@ -46,6 +47,7 @@ export function FilesMenu({ anchorRef, onClose }: FilesMenuProps) {
   const handleNew = () => {
     useStore.getState().newSet();
     setLastSetId(null);
+    track('set-new');
     onClose();
   };
 
@@ -96,6 +98,7 @@ export function FilesMenu({ anchorRef, onClose }: FilesMenuProps) {
 
       await storage.saveSet(set);
       setLastSetId(currentSetId);
+      track('set-save', { mode: 'quick', versions: versions.length });
       onClose();
     } else {
       setSaveAs(false);
@@ -122,6 +125,7 @@ export function FilesMenu({ anchorRef, onClose }: FilesMenuProps) {
     const thumb = useStore.getState().currentSetThumbnail;
     if (thumb) set.meta.thumbnail = thumb;
     exportSetToFile(set);
+    track('set-export', { hasSamples: state.customSamples.length > 0 });
     onClose();
   };
 
@@ -135,6 +139,7 @@ export function FilesMenu({ anchorRef, onClose }: FilesMenuProps) {
       try {
         const set = await importSetFromFile(file);
         useStore.getState().loadSet(set);
+        track('set-import', { source: 'file' });
         onClose();
       } catch (e) {
         console.error('[FilesMenu] Import failed:', e);
@@ -148,6 +153,7 @@ export function FilesMenu({ anchorRef, onClose }: FilesMenuProps) {
   };
 
   const handleShare = () => {
+    track('share-open');
     setShareOpen(true);
   };
 
@@ -273,6 +279,7 @@ function SharePanel({ onClose }: { onClose: () => void }) {
     if (!shareUrlRef.current || copyStatus === 'encoding') return;
     try {
       await copyToClipboard(shareUrlRef.current);
+      track('share-link-copy', { source: 'share-panel', hasCustomSamples });
       setCopyStatus('copied');
       setTimeout(() => setCopyStatus('ready'), 2500);
     } catch (e) {
@@ -293,6 +300,7 @@ function SharePanel({ onClose }: { onClose: () => void }) {
       a.download = `${useStore.getState().currentSetName}-samples.zip`;
       a.click();
       URL.revokeObjectURL(a.href);
+      track('samples-export', { count: customSamples.length });
       setZipStatus('done');
       setTimeout(() => setZipStatus('idle'), 2000);
     } catch (e) {
@@ -311,6 +319,7 @@ function SharePanel({ onClose }: { onClose: () => void }) {
       for (const s of samples) {
         store.addCustomSample(s);
       }
+      track('samples-import', { count: samples.length });
     } catch (err) {
       console.error('[Share] ZIP import failed:', err);
     }

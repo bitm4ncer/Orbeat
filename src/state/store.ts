@@ -22,6 +22,7 @@ import { getCachedBpm, setCachedBpm } from '../audio/bpmCache';
 import type { OrbitrackSet } from '../types/storage';
 import { base64ToBlob } from '../storage/serializer';
 import { generateName } from '../utils/nameGenerator';
+import { track } from '../utils/analytics';
 import { startRecording as recStart, stopRecordingAsync, type RecordingFormat } from '../audio/recorder';
 import {
   saveRecording as dbSaveRec, deleteRecordingFromDB as dbDelRec,
@@ -2333,6 +2334,7 @@ export const useStore = create<StoreState>((set, get) => ({
   startRecording: () => {
     if (recStart()) {
       set({ isRecording: true });
+      track('recording-start');
       import('../logging/logger').then(({ log }) => log.info('store', 'Recording started'));
     }
   },
@@ -2348,6 +2350,7 @@ export const useStore = create<StoreState>((set, get) => ({
         folderId: null, format: recordingFormat, order,
       };
       set((s) => ({ isRecording: false, recordings: [...s.recordings, newRec] }));
+      track('recording-complete', { format: recordingFormat, duration: Math.round(result.duration) });
       import('../logging/logger').then(({ log }) => log.info('store', `Recording stopped: ${newRec.name}`, { duration: result.duration, format: recordingFormat }));
       dbSaveRec(newRec).catch(console.error);
       postSync({ type: 'recording-added', id: newRec.id });

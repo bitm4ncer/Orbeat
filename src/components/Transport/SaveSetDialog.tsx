@@ -6,6 +6,7 @@ import { serializeSet } from '../../storage/serializer';
 import { resizeImageToThumbnail } from '../../storage/thumbnailCapture';
 import { gzipAsync, toBase64Url, strToU8 } from '../../storage/compressionUtils';
 import { setLastSetId } from '../../storage/sessionAutosave';
+import { track } from '../../utils/analytics';
 import type { OrbitrackSet, SetVersionEntry } from '../../types/storage';
 
 const MAX_VERSIONS = 50;
@@ -99,6 +100,7 @@ export function SaveSetDialog({ onClose }: SaveSetDialogProps) {
       useStore.getState().setCurrentSetName(name.trim());
       useStore.setState({ currentSetId: set.meta.id, currentSetThumbnail: set.meta.thumbnail ?? null });
       setLastSetId(set.meta.id);
+      track('set-save', { mode: 'dialog', embedSamples, hasThumbnail: !!thumb });
       onClose();
     } catch (e) {
       console.error('[SaveSetDialog] save failed:', e);

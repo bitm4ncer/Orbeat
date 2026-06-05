@@ -7,6 +7,7 @@ import { setLastSetId } from '../../storage/sessionAutosave';
 import { gunzipAsync, fromBase64Url, strFromU8 } from '../../storage/compressionUtils';
 import { encodeSetToUrl, buildShareUrl } from '../../storage/urlShare';
 import { copyToClipboard } from '../../utils/clipboard';
+import { track } from '../../utils/analytics';
 import { resizeImageToThumbnail } from '../../storage/thumbnailCapture';
 import type { SetMeta, OrbitrackSet, SetVersionEntry } from '../../types/storage';
 
@@ -41,6 +42,7 @@ export function OpenSetDialog({ onClose }: OpenSetDialogProps) {
     if (set) {
       useStore.getState().loadSet(set);
       setLastSetId(id);
+      track('set-open', { source: 'library' });
       onClose();
     }
   };
@@ -65,6 +67,7 @@ export function OpenSetDialog({ onClose }: OpenSetDialogProps) {
         const set = await importSetFromFile(file);
         useStore.getState().loadSet(set);
         setLastSetId(set.meta.id);
+        track('set-import', { source: 'library' });
         onClose();
       } catch (e) {
         console.error('[OpenSetDialog] Import failed:', e);
@@ -94,6 +97,7 @@ export function OpenSetDialog({ onClose }: OpenSetDialogProps) {
       const set = deserializeSet(JSON.parse(json));
       useStore.getState().loadSet(set);
       setLastSetId(set.meta.id);
+      track('set-version-load', { source: entry.source });
       onClose();
     } catch (e) {
       console.error('[OpenSetDialog] version load failed:', e);
@@ -110,6 +114,7 @@ export function OpenSetDialog({ onClose }: OpenSetDialogProps) {
       const result = await encodeSetToUrl(serState, name, thumb);
       const url = buildShareUrl(result.encoded);
       await copyToClipboard(url);
+      track('share-link-copy', { source: 'library', version: !!entry });
 
       const copyKey = entry ? entry.versionId : id;
       setCopiedId(copyKey);

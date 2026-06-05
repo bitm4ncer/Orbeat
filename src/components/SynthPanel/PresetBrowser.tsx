@@ -4,6 +4,7 @@ import { usePresetStore } from '../../state/presetStore';
 import { useClickOutside } from '../../hooks/useClickOutside';
 import { PresetSaveDialog } from './PresetSaveDialog';
 import { exportPresetFile, importPresetFiles } from '../../storage/presetIO';
+import { track } from '../../utils/analytics';
 import type { SynthPreset } from '../../types/storage';
 import type { SynthEngine } from '../../audio/synth/SynthEngine';
 
@@ -288,6 +289,7 @@ export function PresetBrowser({ engine, color, currentPresetName, onPresetLoaded
       await duplicatePreset(preset.id);
     } else if (action === 'export') {
       exportPresetFile(preset);
+      track('preset-export');
     }
   };
 
@@ -298,7 +300,8 @@ export function PresetBrowser({ engine, color, currentPresetName, onPresetLoaded
     input.multiple = true;
     input.onchange = async () => {
       if (!input.files?.length) return;
-      await importPresetFiles(Array.from(input.files));
+      const imported = await importPresetFiles(Array.from(input.files));
+      track('preset-import', { count: imported });
       await loadPresets();
     };
     input.click();

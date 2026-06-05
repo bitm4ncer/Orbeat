@@ -25,6 +25,7 @@ import { initRecordingSync } from './storage/recordingSync';
 import { restoreFromSetId, restoreLegacyAutosave, initSessionAutosave, getLastSetId, restoreEmergencySnapshot, clearEmergencySnapshot } from './storage/sessionAutosave';
 import { initUndoHistory } from './state/undoHistory';
 import { parseShareHash, decodeSetFromUrl } from './storage/urlShare';
+import { track } from './utils/analytics';
 import { perfMonitor, countStoreUpdate } from './debug/perfMonitor';
 import { LogConsole } from './components/LogConsole/LogConsole';
 
@@ -143,6 +144,7 @@ function App() {
           const set = await decodeSetFromUrl(sharedHash);
           useStore.getState().loadSet(set);
           restored = true;
+          track('shared-link-open');
           // Clear hash without adding to browser history
           history.replaceState(null, '', window.location.pathname + window.location.search);
         } catch (e) {

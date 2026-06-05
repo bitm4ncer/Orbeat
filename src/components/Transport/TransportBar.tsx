@@ -6,6 +6,7 @@ import { loadSamples } from '../../audio/sampler';
 import { FilesMenu } from './FilesMenu';
 import { SettingsPopup } from './SettingsPopup';
 import { MidiLight } from './MidiLight';
+import { track } from '../../utils/analytics';
 const orbitrackLogo = `${import.meta.env.BASE_URL}orbitrack_logo.svg`;
 
 const audioInitRef = { initialized: false };
@@ -77,6 +78,8 @@ export function TransportBar() {
 
   const handlePlayStop = async () => {
     await ensureAudio();
+    // Track starts only (isPlaying is the state before the toggle below).
+    if (!useStore.getState().isPlaying) track('transport-play');
     toggleTransport();
   };
 
@@ -126,7 +129,7 @@ export function TransportBar() {
 
       <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-3">
         <button
-          onClick={toggleTrackMode}
+          onClick={() => { track('mode-track', { enabled: !trackMode }); toggleTrackMode(); }}
           className={`px-2 py-1 text-xs rounded font-mono tracking-wide transition-colors border cursor-pointer
             ${trackMode ? 'border-current' : 'text-muted-foreground hover:text-foreground border-transparent'}`}
           style={
@@ -160,7 +163,7 @@ export function TransportBar() {
           )}
         </button>
         <button
-          onClick={toggleLiveMode}
+          onClick={() => { track('mode-live', { enabled: !liveMode }); toggleLiveMode(); }}
           className={`px-2 py-1 text-xs rounded font-mono tracking-wide transition-colors border cursor-pointer
             ${liveMode ? 'border-current' : 'text-muted-foreground hover:text-[#e7a2aa] border-transparent'}`}
           style={
